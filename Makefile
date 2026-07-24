@@ -32,10 +32,13 @@ ui-test:
 	python3 scripts/toggle-acceptance.py
 
 # Assemble a double-clickable menu-bar .app around the built binary.
+# (assets/AppIcon.icns is generated from assets/fanknob_logo.png by
+#  scripts/make-icon.swift + iconutil; regenerate only when the logo changes.)
 app: all
 	rm -rf build/$(APP)
-	mkdir -p build/$(APP)/Contents/MacOS
+	mkdir -p build/$(APP)/Contents/MacOS build/$(APP)/Contents/Resources
 	cp app/Info.plist build/$(APP)/Contents/Info.plist
+	cp assets/AppIcon.icns build/$(APP)/Contents/Resources/AppIcon.icns
 	cp $(BIN)/FanknobApp build/$(APP)/Contents/MacOS/FanknobApp
 	@echo "Built build/$(APP)"
 
