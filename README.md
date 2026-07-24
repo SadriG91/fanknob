@@ -181,6 +181,12 @@ The root daemon accepts only two commands (`set <0-100> [seconds]`, `auto`) over
 its socket, so even though any local user can connect, it can't be driven to do
 anything but move the fans.
 
+The daemon is also a system-wide singleton (flock on `/var/run/fanknobd.lock`):
+if a second instance starts — say a Homebrew-managed daemon next to a
+`make install` one — it refuses to run instead of stealing the socket, and its
+launchd keep-alive retries mean it takes over automatically if the first one is
+ever stopped.
+
 ## License
 
 [MIT](LICENSE)

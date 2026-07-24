@@ -141,6 +141,32 @@ import Foundation
     }
 }
 
+// MARK: - Daemon singleton lock
+
+@Suite struct DaemonLockTests {
+    @Test func secondAcquireFailsWhileHeldAndSucceedsAfterRelease() {
+        let path = NSTemporaryDirectory() + "fanknob-lock-test-\(getpid())"
+        defer { unlink(path) }
+
+        let first = acquireDaemonLock(path: path)
+        #expect(first != nil)
+
+        // A second daemon must be refused while the first is alive...
+        #expect(acquireDaemonLock(path: path) == nil)
+
+        // ...and must succeed once the holder releases (or dies — flock
+        // releases with the process), enabling automatic failover.
+        if let fd = first { close(fd) }
+        let successor = acquireDaemonLock(path: path)
+        #expect(successor != nil)
+        if let fd = successor { close(fd) }
+    }
+
+    @Test func unopenablePathReturnsNil() {
+        #expect(acquireDaemonLock(path: "/nonexistent-dir/fanknob.lock") == nil)
+    }
+}
+
 // MARK: - Daemon protocol
 
 @Suite struct DaemonProtocolTests {

@@ -74,6 +74,16 @@ struct Fanknobd {
     static func main() {
         guard geteuid() == 0 else { log("must run as root"); exit(1) }
 
+        // Singleton guard: a Homebrew-managed daemon and a `make install` one
+        // must not fight over the socket. The lock fd stays open for the
+        // process lifetime; if the winner ever stops, launchd's keep-alive
+        // retries let this instance take over automatically.
+        guard acquireDaemonLock() != nil else {
+            log("another fanknobd already holds \(fanknobdLockPath) — refusing to start")
+            log("keep ONE install: `sudo make uninstall` (manual) or `sudo brew services stop fanknob` (Homebrew)")
+            exit(1)
+        }
+
         let smc = SMC()
         do { try smc.open() } catch { log("\(error)"); exit(1) }
 

@@ -12,6 +12,27 @@ public enum DaemonResult {
     case failed(String)
 }
 
+// MARK: - Singleton lock
+
+public let fanknobdLockPath = "/var/run/fanknobd.lock"
+
+/// Try to become the single fanknobd instance system-wide (e.g. a Homebrew-
+/// managed daemon and a `make install` one must not fight over the socket).
+///
+/// Returns the lock's file descriptor — the caller must keep it open for the
+/// daemon's lifetime — or nil if another live daemon holds the lock. flock
+/// releases automatically when the holder exits or dies, so with launchd
+/// keep-alive the losing daemon's periodic retries become automatic failover.
+public func acquireDaemonLock(path: String = fanknobdLockPath) -> Int32? {
+    let fd = open(path, O_CREAT | O_RDWR, 0o644)
+    guard fd >= 0 else { return nil }
+    guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
+        close(fd)
+        return nil
+    }
+    return fd
+}
+
 // MARK: - Protocol
 
 /// A validated daemon command. The daemon accepts nothing else, which is what

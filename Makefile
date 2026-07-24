@@ -54,6 +54,10 @@ clean:
 # leave root-owned files in .build/ and build/ that break later user builds.
 install:
 	@[ "$$(id -u)" = "0" ] || { echo "run: sudo make install"; exit 1; }
+	@[ ! -f $(PLISTDIR)/homebrew.mxcl.fanknob.plist ] || { \
+		echo "fanknob's daemon is already managed by Homebrew on this machine."; \
+		echo "Use ONE install method — either stay on Homebrew, or first run:"; \
+		echo "  sudo brew services stop fanknob && brew uninstall fanknob"; exit 1; }
 	@[ -x $(BIN)/fanknob ] && [ -x $(BIN)/fanknobd ] && [ -d build/$(APP) ] || \
 		{ echo "artifacts missing — run 'make app' first (as your normal user), then sudo make install"; exit 1; }
 	install -m 755 $(BIN)/fanknob  $(PREFIX)/fanknob
@@ -68,6 +72,6 @@ install:
 uninstall:
 	@[ "$$(id -u)" = "0" ] || { echo "run: sudo make uninstall"; exit 1; }
 	-launchctl bootout system $(PLISTDIR)/$(PLIST) 2>/dev/null
-	rm -f  $(PLISTDIR)/$(PLIST) $(PREFIX)/fanknob $(PREFIX)/fanknobd /var/run/fanknobd.sock
+	rm -f  $(PLISTDIR)/$(PLIST) $(PREFIX)/fanknob $(PREFIX)/fanknobd /var/run/fanknobd.sock /var/run/fanknobd.lock
 	rm -rf $(APPDIR)/$(APP)
 	@echo "Uninstalled. (Run 'fanknob auto' first if fans were left in manual.)"
