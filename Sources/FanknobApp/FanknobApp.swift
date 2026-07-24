@@ -13,9 +13,10 @@ struct FanknobApp: App {
         MenuBarExtra {
             PopoverView(model: model)
         } label: {
-            // Icon + live temperature in the menu bar.
+            // Icon + live temperature in the menu bar. Monospaced digits keep
+            // the width fixed so the item doesn't jitter as the number changes.
             Image(systemName: "fanblades")
-            Text(model.menuLabel)
+            Text(model.menuLabel).monospacedDigit()
         }
         .menuBarExtraStyle(.window)   // rich popover content (sliders, gauges)
     }
