@@ -36,14 +36,27 @@ func brightness(_ x: Int, _ y: Int) -> CGFloat {
     return (c.redComponent + c.greenComponent + c.blueComponent) / 3
 }
 
-// 1. Bounding box of the dark artwork (the logo square). The white background
-// and its soft grey shadow stay above the brightness threshold.
+// Detection mode: if the source has real transparency (corner alpha ≈ 0), the
+// tile is already cleanly matted — find it by alpha and use its own corners.
+// Otherwise (artwork baked onto opaque white) fall back to the dark-pixel scan
+// plus wordmark strip plus rounded mask.
+let cornerAlpha = rep.colorAt(x: 3, y: 3)?.alphaComponent ?? 1
+let alphaMatted = cornerAlpha < 0.1
+print(alphaMatted ? "mode: alpha-matted source" : "mode: opaque white background")
+
+// 1. Bounding box of the artwork.
 var minX = w, maxX = 0, minY = h, maxY = 0
 for y in stride(from: 0, to: h, by: 2) {
     for x in stride(from: 0, to: w, by: 2) {
         guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
-        let b = (c.redComponent + c.greenComponent + c.blueComponent) / 3
-        if b < 0.6 && c.alphaComponent > 0.5 {
+        let hit: Bool
+        if alphaMatted {
+            hit = c.alphaComponent > 0.5
+        } else {
+            let b = (c.redComponent + c.greenComponent + c.blueComponent) / 3
+            hit = b < 0.6 && c.alphaComponent > 0.5
+        }
+        if hit {
             minX = min(minX, x); maxX = max(maxX, x)
             minY = min(minY, y); maxY = max(maxY, y)
         }
@@ -97,7 +110,7 @@ func stripWordmark() {
         }
     }
 }
-stripWordmark()
+if !alphaMatted { stripWordmark() }   // alpha-matted sources carry no wordmark
 
 // Draw from the edited bitmap, not the original file.
 let editedImage = NSImage(size: NSSize(width: w, height: h))
@@ -107,10 +120,16 @@ editedImage.addRepresentation(rep)
 let cropRect = NSRect(x: CGFloat(minX), y: CGFloat(h - 1 - maxY),
                       width: CGFloat(maxX - minX), height: CGFloat(maxY - minY))
 
-// 3. Rounded-mask the crop and center it on a transparent 1024 canvas.
+// 3. Rounded-mask the crop and center it on a transparent 1024 canvas,
+// preserving the crop's aspect ratio (soft shadows can make it non-square).
 let canvas = 1024
-let target = NSRect(x: CGFloat(canvas) * 0.09, y: CGFloat(canvas) * 0.09,
-                    width: CGFloat(canvas) * 0.82, height: CGFloat(canvas) * 0.82)
+let box = NSRect(x: CGFloat(canvas) * 0.09, y: CGFloat(canvas) * 0.09,
+                 width: CGFloat(canvas) * 0.82, height: CGFloat(canvas) * 0.82)
+let fit = min(box.width / cropRect.width, box.height / cropRect.height)
+let target = NSRect(x: box.midX - cropRect.width * fit / 2,
+                    y: box.midY - cropRect.height * fit / 2,
+                    width: cropRect.width * fit,
+                    height: cropRect.height * fit)
 // Mask radius fractionally above the artwork's own corner radius so no white
 // corner slivers survive.
 let cornerRadius = target.width * 0.21
@@ -121,8 +140,12 @@ let out = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: canvas, pixelsHigh
                            bytesPerRow: 0, bitsPerPixel: 0)!
 NSGraphicsContext.saveGraphicsState()
 NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: out)
-NSBezierPath(roundedRect: target, xRadius: cornerRadius, yRadius: cornerRadius).addClip()
-editedImage.draw(in: target, from: cropRect, operation: .copy, fraction: 1.0)
+if !alphaMatted {
+    // Only opaque-white sources need their corners cut; alpha-matted tiles
+    // bring their own transparency, and clipping could shave their corners.
+    NSBezierPath(roundedRect: target, xRadius: cornerRadius, yRadius: cornerRadius).addClip()
+}
+editedImage.draw(in: target, from: cropRect, operation: .sourceOver, fraction: 1.0)
 NSGraphicsContext.restoreGraphicsState()
 
 guard let png = out.representation(using: .png, properties: [:]) else {
