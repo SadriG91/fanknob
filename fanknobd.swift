@@ -1,0 +1,124 @@
+// fanknobd.swift — privileged fan-control daemon.
+//
+// Runs as root under launchd. Listens on a Unix socket and accepts ONLY these
+// commands — "set <0-100> [seconds]" and "auto" — so even though any local user
+// can connect, the daemon can't be made to do anything but move the fans.
+//
+// Safety auto-revert: "set 60 120" holds 60% for 120 seconds, then the DAEMON
+// (not the client) returns the fans to automatic control. Because the timer
+// lives here, the revert still happens if the client exits or the terminal is
+// closed — you can't accidentally leave the fans pinned.
+
+import Foundation
+import Darwin
+import Dispatch
+
+func log(_ s: String) {
+    FileHandle.standardError.write("fanknobd: \(s)\n".data(using: .utf8)!)
+}
+
+// All SMC access and the pending-revert timer are serialized through this queue.
+let smcQueue = DispatchQueue(label: "com.fanknob.smc")
+var pendingRevert: DispatchWorkItem?   // only touched on smcQueue
+
+func applyAuto(_ smc: SMC) {
+    let n = fanCount(smc)
+    for i in 0..<n { try? setFanAuto(smc, i) }
+}
+
+// Must run on smcQueue. Returns the text reply for the client.
+func handleLocked(_ line: String, _ smc: SMC) -> String {
+    let parts = line.split(separator: " ").map(String.init)
+    guard let verb = parts.first else { return "empty command" }
+
+    switch verb {
+    case "auto":
+        pendingRevert?.cancel(); pendingRevert = nil
+        applyAuto(smc)
+        return "auto: returned to automatic control"
+
+    case "set":
+        guard parts.count >= 2, let v = Double(parts[1]) else { return "usage: set <0-100> [seconds]" }
+        let pct = v.clamped(0, 100)
+        let seconds = parts.count >= 3 ? max(0, Int(parts[2]) ?? 0) : 0
+
+        // A new command supersedes any scheduled revert.
+        pendingRevert?.cancel(); pendingRevert = nil
+
+        let n = fanCount(smc)
+        var lines: [String] = []
+        for i in 0..<n {
+            if let rpm = try? setFanKnob(smc, i, pct: pct) {
+                lines.append(String(format: "fan %d -> %.0f rpm (knob %d%%)", i, rpm, Int(pct)))
+            } else {
+                lines.append("fan \(i): write failed")
+            }
+        }
+
+        if seconds > 0 {
+            let work = DispatchWorkItem {
+                applyAuto(smc)
+                log("safety auto-revert fired after \(seconds)s")
+            }
+            pendingRevert = work
+            smcQueue.asyncAfter(deadline: .now() + .seconds(seconds), execute: work)
+            lines.append("holding \(Int(pct))% for \(seconds)s, then auto-revert")
+        }
+        return lines.joined(separator: "\n")
+
+    default:
+        return "unknown command: \(verb)"
+    }
+}
+
+// MARK: - Socket server
+
+@main
+struct Fanknobd {
+    static func main() {
+        guard geteuid() == 0 else { log("must run as root"); exit(1) }
+
+        let smc = SMC()
+        do { try smc.open() } catch { log("\(error)"); exit(1) }
+
+        unlink(fanknobdSocketPath)
+
+        let listenFD = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard listenFD >= 0 else { log("socket() failed"); exit(1) }
+
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = fanknobdSocketPath.utf8CString
+        withUnsafeMutableBytes(of: &addr.sun_path) { raw in
+            for (i, b) in pathBytes.enumerated() where i < raw.count { raw[i] = UInt8(bitPattern: b) }
+        }
+        let addrLen = socklen_t(MemoryLayout<sockaddr_un>.size)
+        let bound = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(listenFD, $0, addrLen) }
+        }
+        guard bound == 0 else { log("bind() failed: \(String(cString: strerror(errno)))"); exit(1) }
+
+        // Any local user may send fan commands (they're harmless and validated).
+        chmod(fanknobdSocketPath, 0o666)
+
+        guard listen(listenFD, 8) == 0 else { log("listen() failed"); exit(1) }
+        log("listening on \(fanknobdSocketPath)")
+
+        while true {
+            let clientFD = accept(listenFD, nil, nil)
+            if clientFD < 0 { continue }
+
+            var buf = [UInt8](repeating: 0, count: 256)
+            let n = recv(clientFD, &buf, buf.count, 0)
+            if n > 0 {
+                let raw = String(bytes: buf[0..<n], encoding: .utf8) ?? ""
+                let line = raw.split(whereSeparator: { $0 == "\n" || $0 == "\r" })
+                    .first.map(String.init) ?? ""
+                let reply = smcQueue.sync { handleLocked(line, smc) } + "\n"
+                log("cmd '\(line)'")
+                _ = reply.withCString { send(clientFD, $0, strlen($0), 0) }
+            }
+            Darwin.close(clientFD)
+        }
+    }
+}

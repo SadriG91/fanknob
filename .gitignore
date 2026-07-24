@@ -1,0 +1,9 @@
+# Compiled binaries
+/fanknob
+/fanknobd
+
+# Swift/macOS cruft
+.DS_Store
+*.dSYM/
+*.o
+*.swiftmodule
