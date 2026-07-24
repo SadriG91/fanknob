@@ -166,7 +166,8 @@ private struct ControlSection: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let _ = UILog.log("ControlSection body eval (manual=\(model.manual))")
+        return VStack(alignment: .leading, spacing: 12) {
             // Mode — the clear source of truth.
             Picker("", selection: modeBinding) {
                 Text("Auto").tag(false)

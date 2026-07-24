@@ -16,6 +16,26 @@ import SwiftUI
 import Observation
 import FanknobCore
 
+// Diagnostics: timestamped event log at /tmp/fanknob-ui.log.
+// Off by default; launch with FANKNOB_DEBUG=1 to enable.
+enum UILog {
+    private static let enabled =
+        ProcessInfo.processInfo.environment["FANKNOB_DEBUG"] == "1"
+    private static let q = DispatchQueue(label: "com.fanknob.uilog")
+    private static let handle: FileHandle? = {
+        let path = "/tmp/fanknob-ui.log"
+        FileManager.default.createFile(atPath: path, contents: nil)
+        return FileHandle(forWritingAtPath: path)
+    }()
+    static func log(_ s: String) {
+        guard enabled else { return }
+        let t = Date().timeIntervalSince1970
+        q.async {
+            handle?.write(String(format: "%.3f  %@\n", t, s).data(using: .utf8)!)
+        }
+    }
+}
+
 @Observable
 final class FanModel {
     // workQueue-confined (created there in init; serial queue orders all access)
@@ -30,6 +50,14 @@ final class FanModel {
     @ObservationIgnored private var writesInFlight = 0
     @ObservationIgnored private var lastLiveApply = Date.distantPast
     @ObservationIgnored private var pendingLiveApply: DispatchWorkItem?
+    // Mode intent guard: the SMC reports the OLD fan mode for tens of ms after
+    // a write (the fan firmware applies mode changes asynchronously), so a
+    // poll right after a completed write reads stale hardware and would yank
+    // the toggle back. After a user action we suspend mode reconciliation
+    // until the hardware AGREES with the intent — or a timeout passes (write
+    // genuinely failed / external change), at which point hardware wins again.
+    @ObservationIgnored private var pendingMode: Bool?
+    @ObservationIgnored private var pendingModeUntil = Date.distantPast
 
     @ObservationIgnored let chip = chipName()
 
@@ -41,6 +69,10 @@ final class FanModel {
     var canWrite = false
     /// False until the first hardware snapshot lands (sensor discovery ~0.4 s).
     var ready = false
+    /// Menu-bar degrees. Separate from `cpu` and updated only when the shown
+    /// integer changes, so the status-item label re-renders rarely instead of
+    /// every poll.
+    var menuTemp: Int?
 
     var knob: Double = 0
     var holdSeconds = 0
@@ -74,8 +106,7 @@ final class FanModel {
     // MARK: Derived
 
     var menuLabel: String {
-        if let c = cpu { return "\(Int(c.rounded()))°" }
-        if let g = gpu { return "\(Int(g.rounded()))°" }
+        if let t = menuTemp { return "\(t)°" }
         return "—"
     }
 
@@ -114,6 +145,8 @@ final class FanModel {
         if cpu != snap.temps.cpu { cpu = snap.temps.cpu }
         if gpu != snap.temps.gpu { gpu = snap.temps.gpu }
         if canWrite != writable { canWrite = writable }
+        let shownTemp = (snap.temps.cpu ?? snap.temps.gpu).map { Int($0.rounded()) }
+        if menuTemp != shownTemp { menuTemp = shownTemp }
         // Reconcile mode with hardware ONLY when the user isn't mid-action:
         // a poll snapshotted before a write must not undo the optimistic state.
         //
@@ -123,9 +156,16 @@ final class FanModel {
         // mouse-up on the mode toggle, AppKit cancelled the click ("sticky
         // toggle"). The knob is the user's setpoint; it's seeded on entering
         // Manual instead.
-        if !editing && writesInFlight == 0 {
+        if !editing {
             let hwManual = snap.fans.contains { $0.managed }
-            if manual != hwManual { manual = hwManual }
+            // Clear the intent once hardware catches up (or on timeout).
+            if let want = pendingMode, hwManual == want || Date() >= pendingModeUntil {
+                pendingMode = nil
+            }
+            if pendingMode == nil && writesInFlight == 0 && manual != hwManual {
+                UILog.log("publish: manual \(manual) -> \(hwManual)")
+                manual = hwManual
+            }
         }
         if let d = holdDeadline {
             let left = max(0, Int(d.timeIntervalSinceNow.rounded()))
@@ -138,9 +178,12 @@ final class FanModel {
     /// clobber optimistic UI state, then refresh immediately after it lands.
     private func performWrite(_ op: @escaping (FanController) -> Void) {
         writesInFlight += 1
+        UILog.log("write enqueued (inFlight=\(writesInFlight))")
         workQueue.async { [weak self] in
             guard let self else { return }
+            let t = Date()
             op(self.controller)
+            UILog.log(String(format: "write op done in %.0f ms", -t.timeIntervalSinceNow * 1000))
             DispatchQueue.main.async {
                 self.writesInFlight -= 1
                 self.pollOnce()
@@ -151,6 +194,7 @@ final class FanModel {
     // MARK: Control (called from the UI on the main queue)
 
     func setMode(_ toManual: Bool) {
+        UILog.log("setMode(\(toManual)) manual=\(manual) canWrite=\(canWrite)")
         if toManual {
             // Seed the knob from the current speed so Manual takes over right
             // where the firmware left off (fans data is ≤1 s old).
@@ -165,6 +209,8 @@ final class FanModel {
         guard canWrite else { return }
         pendingLiveApply?.cancel(); pendingLiveApply = nil
         manual = false
+        pendingMode = false
+        pendingModeUntil = Date().addingTimeInterval(1.5)
         holdDeadline = nil
         holdRemaining = 0
         performWrite { $0.auto() }
@@ -175,6 +221,8 @@ final class FanModel {
         guard canWrite else { return }
         pendingLiveApply?.cancel(); pendingLiveApply = nil
         manual = true
+        pendingMode = true
+        pendingModeUntil = Date().addingTimeInterval(1.5)
         lastLiveApply = Date()
         let k = knob, h = holdSeconds
         holdDeadline = h > 0 ? Date().addingTimeInterval(Double(h)) : nil

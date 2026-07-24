@@ -13,10 +13,9 @@ struct FanknobApp: App {
         MenuBarExtra {
             PopoverView(model: model)
         } label: {
-            // Icon + live temperature in the menu bar. An explicit monospaced
-            // font keeps the width fixed so the item doesn't jitter as the
-            // number changes (the .monospacedDigit() modifier isn't honored in
-            // the status-item rendering context).
+            // Icon + live temperature. The label re-renders only when the
+            // shown integer changes (model.menuTemp), and the monospaced font
+            // keeps its width stable.
             Image(systemName: "fanblades")
             Text(model.menuLabel)
                 .font(.system(size: 13, weight: .regular, design: .monospaced))
