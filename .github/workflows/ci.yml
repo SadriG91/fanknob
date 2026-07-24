@@ -29,7 +29,12 @@ permissions:
 
 jobs:
   build-test:
-    runs-on: macos-15
+    # Both SDKs: macos-15 guards the deployment floor, macos-26 matches what
+    # the bottle ships with (newest SDK = current system appearance).
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [macos-15, macos-26]
     steps:
       - uses: actions/checkout@v7
 
