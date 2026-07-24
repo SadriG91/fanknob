@@ -245,7 +245,7 @@ public extension Double {
 
 // MARK: - Fans
 
-public struct Fan {
+public struct Fan: Equatable {
     public let index: Int
     public let actual: Double
     public let min: Double

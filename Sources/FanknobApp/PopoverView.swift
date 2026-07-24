@@ -1,4 +1,9 @@
 // PopoverView.swift — the menu-bar popover UI.
+//
+// Each section is a separate child View struct on purpose: @Observable tracks
+// dependencies per View.body, so with separate children the 1 Hz poll (fans,
+// temps) re-renders only the rows that changed — it can no longer re-render
+// the mode toggle / slider mid-click, which is what made them feel sticky.
 
 import SwiftUI
 import AppKit
@@ -53,33 +58,34 @@ struct ModeBadge: View {
     }
 }
 
-// MARK: - Popover
+// MARK: - Popover (container only; sections are isolated child views)
 
 struct PopoverView: View {
-    @Bindable var model: FanModel
-
-    private var modeBinding: Binding<Bool> {
-        Binding(get: { model.manual }, set: { model.setMode($0) })
-    }
+    var model: FanModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            header
+            HeaderSection(model: model)
             Divider()
-            temps
-            if !model.fans.isEmpty { Divider(); fans }
+            TempsSection(model: model)
             Divider()
-            control
+            FansSection(model: model)
             Divider()
-            statusBar
+            ControlSection(model: model)
+            Divider()
+            StatusSection(model: model)
         }
         .padding(16)
         .frame(width: 320)
     }
+}
 
-    // MARK: Header
+// MARK: - Header
 
-    private var header: some View {
+private struct HeaderSection: View {
+    var model: FanModel
+
+    var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "fanblades")
                 .foregroundStyle(model.manual ? activeAccent : .secondary)
@@ -90,13 +96,17 @@ struct PopoverView: View {
             Text(model.chip).font(.caption).foregroundStyle(.secondary)
         }
     }
+}
 
-    // MARK: Temps
+// MARK: - Temperatures
 
-    private var temps: some View {
+private struct TempsSection: View {
+    var model: FanModel
+
+    var body: some View {
         VStack(spacing: 10) {
-            if let c = model.cpu { tempRow("CPU", c) }
-            if let g = model.gpu { tempRow("GPU", g) }
+            if let c = model.cpu { row("CPU", c) }
+            if let g = model.gpu { row("GPU", g) }
             if model.cpu == nil && model.gpu == nil {
                 if model.ready {
                     Text("No temperature sensors").font(.caption).foregroundStyle(.secondary)
@@ -111,7 +121,7 @@ struct PopoverView: View {
         }
     }
 
-    private func tempRow(_ label: String, _ value: Double) -> some View {
+    private func row(_ label: String, _ value: Double) -> some View {
         HStack(spacing: 10) {
             Text(label).font(.callout).foregroundStyle(.secondary)
                 .frame(width: 38, alignment: .leading)
@@ -121,10 +131,14 @@ struct PopoverView: View {
                 .frame(width: 40, alignment: .trailing)
         }
     }
+}
 
-    // MARK: Fans
+// MARK: - Fans
 
-    private var fans: some View {
+private struct FansSection: View {
+    var model: FanModel
+
+    var body: some View {
         VStack(spacing: 10) {
             ForEach(model.fans, id: \.index) { f in
                 HStack(spacing: 10) {
@@ -140,15 +154,23 @@ struct PopoverView: View {
             }
         }
     }
+}
 
-    // MARK: Control
+// MARK: - Control (mode toggle, knob, hold)
 
-    private var control: some View {
+private struct ControlSection: View {
+    @Bindable var model: FanModel
+
+    private var modeBinding: Binding<Bool> {
+        Binding(get: { model.manual }, set: { model.setMode($0) })
+    }
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             // Mode — the clear source of truth.
             Picker("", selection: modeBinding) {
-                Label("Auto", systemImage: "a.circle").tag(false)
-                Label("Manual", systemImage: "hand.point.up.left").tag(true)
+                Text("Auto").tag(false)
+                Text("Manual").tag(true)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -209,10 +231,14 @@ struct PopoverView: View {
             .opacity(model.manual ? 1 : 0.4)
         }
     }
+}
 
-    // MARK: Status
+// MARK: - Status
 
-    private var statusBar: some View {
+private struct StatusSection: View {
+    var model: FanModel
+
+    var body: some View {
         HStack(spacing: 6) {
             Circle()
                 .fill(model.canWrite ? Color.green : Color.orange)

@@ -26,6 +26,7 @@ final class FanModel {
 
     // main-queue-confined bookkeeping
     @ObservationIgnored private var pollInFlight = false
+    @ObservationIgnored private var pollAgain = false
     @ObservationIgnored private var writesInFlight = 0
     @ObservationIgnored private var lastLiveApply = Date.distantPast
     @ObservationIgnored private var pendingLiveApply: DispatchWorkItem?
@@ -85,7 +86,10 @@ final class FanModel {
     // MARK: Polling (pollOnce/publish run on the main queue)
 
     private func pollOnce() {
-        guard !pollInFlight else { return }   // coalesce: never stack polls
+        // Coalesce, but never drop a request: if a poll is in flight, run one
+        // more right after it. This guarantees the immediate refresh after a
+        // write can't be swallowed by an overlapping timer poll.
+        guard !pollInFlight else { pollAgain = true; return }
         pollInFlight = true
         workQueue.async { [weak self] in
             guard let self, self.controller != nil else {
@@ -97,24 +101,33 @@ final class FanModel {
             DispatchQueue.main.async {
                 self.pollInFlight = false
                 self.publish(snap: snap, writable: writable)
+                if self.pollAgain { self.pollAgain = false; self.pollOnce() }
             }
         }
     }
 
     private func publish(snap: Snapshot, writable: Bool) {
-        fans = snap.fans
-        cpu = snap.temps.cpu
-        gpu = snap.temps.gpu
-        canWrite = writable
+        // Assign only when values actually change: @Observable notifies on
+        // every set (no equality check), and spurious sets re-render the
+        // control views each poll — interrupting the toggle's click animation.
+        if fans != snap.fans { fans = snap.fans }
+        if cpu != snap.temps.cpu { cpu = snap.temps.cpu }
+        if gpu != snap.temps.gpu { gpu = snap.temps.gpu }
+        if canWrite != writable { canWrite = writable }
         // Reconcile mode/knob with hardware ONLY when the user isn't mid-action:
         // a poll snapshotted before a write must not undo the optimistic state.
         if !editing && writesInFlight == 0 {
-            manual = snap.fans.contains { $0.managed }
-            if !manual, let k = snap.fans.first?.knob { knob = k }
+            let hwManual = snap.fans.contains { $0.managed }
+            if manual != hwManual { manual = hwManual }
+            if !hwManual, let k = snap.fans.first?.knob {
+                let rounded = k.rounded()   // whole-% steps; don't jitter the slider
+                if knob != rounded { knob = rounded }
+            }
         }
         if let d = holdDeadline {
-            holdRemaining = max(0, Int(d.timeIntervalSinceNow.rounded()))
-            if holdRemaining == 0 { holdDeadline = nil }
+            let left = max(0, Int(d.timeIntervalSinceNow.rounded()))
+            if holdRemaining != left { holdRemaining = left }
+            if left == 0 { holdDeadline = nil }
         }
     }
 
