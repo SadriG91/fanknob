@@ -11,7 +11,9 @@ import FanknobCore
 /// the item width tracked the digits shown, 62↔64 pt). An NSImage with a
 /// constant canvas is the only reliable way to pin the width.
 func statusImage(temp: Int?) -> NSImage {
-    let size = NSSize(width: 52, height: 18)
+    // 45 pt: snug gap for the normal "NN°" case, still fits a 3-digit "105°"
+    // (which then just closes the gap) without ever changing the item width.
+    let size = NSSize(width: 45, height: 18)
     let image = NSImage(size: size, flipped: false) { rect in
         if let symbol = NSImage(systemSymbolName: "fanblades", accessibilityDescription: "fanknob")?
             .withSymbolConfiguration(.init(pointSize: 13, weight: .regular)) {
