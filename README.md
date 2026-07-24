@@ -153,3 +153,7 @@ this — see the comment in `Sources/FanknobCore/SMC.swift`.
 The root daemon accepts only two commands (`set <0-100> [seconds]`, `auto`) over
 its socket, so even though any local user can connect, it can't be driven to do
 anything but move the fans.
+
+## License
+
+[MIT](LICENSE)
