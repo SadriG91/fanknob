@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/AppIcon-1024.png" width="128" alt="fanknob icon">
+</p>
+
 # fanknob — fan control for Apple Silicon Macs
 
 Control your Mac's fans with a **0–100 knob** (mapped onto each fan's own
@@ -9,6 +13,17 @@ min→max RPM range) and monitor CPU/GPU temperatures. Three faces on one engine
 
 It talks to the SMC directly over IOKit — the same mechanism apps like Macs Fan
 Control use. Tested on a MacBook Pro 14" (M2 Pro, macOS 26).
+
+<p align="center">
+  <img src="assets/screenshots/popover-auto.png" width="300" alt="Popover in automatic mode">
+  &nbsp;&nbsp;
+  <img src="assets/screenshots/popover-manual.png" width="300" alt="Popover in manual mode with a 30s hold armed">
+</p>
+<p align="center">
+  <img src="assets/screenshots/menubar.png" alt="Menu bar: fan icon with live CPU temperature">
+  <br>
+  <em>Live CPU temperature in the menu bar; the fan turns accent-colored while in manual mode.</em>
+</p>
 
 ## Layout
 
@@ -24,6 +39,15 @@ com.fanknob.daemon.plist
 ```
 
 ## Build & install
+
+```sh
+git clone https://github.com/SadriG91/fanknob.git
+cd fanknob
+make app             # build everything + assemble Fanknob.app
+sudo make install    # install CLI + daemon + app, load the daemon
+```
+
+All targets:
 
 ```sh
 make                 # build everything (release)
