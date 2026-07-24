@@ -98,7 +98,15 @@ struct PopoverView: View {
             if let c = model.cpu { tempRow("CPU", c) }
             if let g = model.gpu { tempRow("GPU", g) }
             if model.cpu == nil && model.gpu == nil {
-                Text("No temperature sensors").font(.caption).foregroundStyle(.secondary)
+                if model.ready {
+                    Text("No temperature sensors").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    HStack {
+                        Spacer()
+                        ProgressView().controlSize(.small)
+                        Spacer()
+                    }
+                }
             }
         }
     }
@@ -163,7 +171,10 @@ struct PopoverView: View {
                 Slider(value: $model.knob, in: 0...100) { editing in
                     model.editing = editing
                     if editing { model.manual = true }   // grabbing = manual intent
-                    else { model.applyKnob() }
+                    else { model.applyKnob() }           // release = authoritative apply
+                }
+                .onChange(of: model.knob) { _, _ in
+                    model.liveApply()                    // throttled live apply mid-drag
                 }
                 .tint(model.manual ? activeAccent : Color.secondary)
                 .disabled(!model.canWrite)

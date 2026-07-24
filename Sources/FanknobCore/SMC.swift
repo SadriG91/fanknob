@@ -149,12 +149,19 @@ public final class SMC {
 
     public struct KeyInfo { public let dataSize: UInt32; public let dataType: UInt32 }
 
+    // A key's size/type never change, so cache them: this halves the IOKit
+    // calls on every repeated read (matters at 1 Hz over ~230 sensors).
+    private var infoCache: [UInt32: KeyInfo] = [:]
+
     public func keyInfo(_ key: UInt32) throws -> KeyInfo {
+        if let cached = infoCache[key] { return cached }
         var input = SMCParamStruct()
         input.key = key
         input.data8 = SMCSelector.getKeyInfo.rawValue
         let out = try call(&input)
-        return KeyInfo(dataSize: out.keyInfo.dataSize, dataType: out.keyInfo.dataType)
+        let info = KeyInfo(dataSize: out.keyInfo.dataSize, dataType: out.keyInfo.dataType)
+        infoCache[key] = info
+        return info
     }
 
     public func read(_ key: UInt32) -> (type: UInt32, bytes: [UInt8])? {

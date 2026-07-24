@@ -64,6 +64,29 @@ func cmdKeys(_ smc: SMC, prefix: String) {
     }
 }
 
+// Hidden dev command: time the SMC read paths the app's poller uses.
+func cmdBench(_ smc: SMC) {
+    func ms(_ t: TimeInterval) -> String { String(format: "%7.2f ms", t * 1000) }
+
+    var t0 = Date()
+    let keys = discoverTempKeys(smc)
+    let discover = Date().timeIntervalSince(t0)
+    print("discoverTempKeys (\(keys.count) keys): \(ms(discover))")
+
+    let iters = 20
+    t0 = Date()
+    for _ in 0..<iters { _ = readTempsCached(smc, keys) }
+    let tempAvg = Date().timeIntervalSince(t0) / Double(iters)
+    print("readTempsCached  avg over \(iters):   \(ms(tempAvg))")
+
+    t0 = Date()
+    for _ in 0..<iters { _ = (0..<fanCount(smc)).compactMap { readFan(smc, $0) } }
+    let fanAvg = Date().timeIntervalSince(t0) / Double(iters)
+    print("fan scan         avg over \(iters):   \(ms(fanAvg))")
+
+    print("≈ one app poll (temps + fans):  \(ms(tempAvg + fanAvg))")
+}
+
 // set/auto: run in-process if root, else ask the daemon.
 func cmdWrite(_ smc: SMC, command: String, apply: (SMC) -> Void) {
     if geteuid() == 0 { apply(smc); return }
@@ -114,6 +137,7 @@ struct Fanknob {
         case "status": cmdStatus(smc)
         case "temp":   cmdTemp(smc)
         case "tui", "top": runTUI(smc)
+        case "bench":  cmdBench(smc)   // hidden: SMC read-path timings
         case "keys":   cmdKeys(smc, prefix: args.count >= 3 ? args[2] : "F")
         case "set":
             guard args.count >= 3, let v = Double(args[2]) else {
