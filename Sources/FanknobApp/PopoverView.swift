@@ -179,23 +179,22 @@ private struct ControlSection: View {
             .disabled(!model.canWrite)
 
             // Knob
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text("Fan speed").font(.subheadline).foregroundStyle(.secondary)
                     Spacer()
+                    // Both value variants share the same text metrics, so the
+                    // row height is naturally constant across mode switches —
+                    // the accent color + bold weight carry the emphasis.
                     if model.manual {
                         Text("\(Int(model.knob))%")
-                            .font(.title3.monospacedDigit().weight(.bold))
+                            .font(.subheadline.monospacedDigit().weight(.bold))
                             .foregroundStyle(activeAccent)
                     } else {
                         Text("auto").font(.subheadline.weight(.medium))
                             .foregroundStyle(.secondary)
                     }
                 }
-                // Constant height: the big % and the small "auto" text have
-                // different metrics, and without this the popover resizes on
-                // every mode switch.
-                .frame(height: 24)
                 Slider(value: $model.knob, in: 0...100) { editing in
                     model.editing = editing
                     if editing { model.manual = true }   // grabbing = manual intent
