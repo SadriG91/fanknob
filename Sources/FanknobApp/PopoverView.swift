@@ -255,21 +255,27 @@ private struct HoldLabel: View {
 
 private struct StatusSection: View {
     var model: FanModel
+    @State private var hovering = false
 
     var body: some View {
         HStack(spacing: 6) {
-            // Generous hit area: a 7 pt circle alone is nearly impossible to
-            // hover, so the tooltip would never be discovered.
+            // Generous hit area (a bare 7 pt circle is nearly impossible to
+            // hover). The status text reveals INSTANTLY on hover — the system
+            // .help() tooltip needs ~2 s of stationary cursor and reads as
+            // "not working".
             Circle()
                 .fill(model.canWrite ? Color.green : Color.orange)
                 .frame(width: 7, height: 7)
                 .frame(width: 20, height: 20)
                 .contentShape(Rectangle())
-                .help(model.canWrite ? "Helper daemon connected — fan control available"
-                                     : "Helper not installed — run “sudo make install”")
-            if !model.canWrite {
-                Text("setup needed").font(.caption2).foregroundStyle(.secondary)
-            }
+                .onHover { hovering = $0 }
+            // "setup needed" is always visible; the healthy state only on hover.
+            Text(model.canWrite ? "helper connected — fan control available"
+                                : "helper not installed — run “sudo make install”")
+                .font(.caption2).foregroundStyle(.secondary)
+                .lineLimit(1).minimumScaleFactor(0.8)
+                .opacity(model.canWrite && !hovering ? 0 : 1)
+                .animation(.easeOut(duration: 0.15), value: hovering)
             Spacer()
             Button("Quit") { NSApp.terminate(nil) }
                 .buttonStyle(.plain)
