@@ -1,9 +1,9 @@
-// swift-tools-version:5.9
+// swift-tools-version:6.0
 import PackageDescription
 
 let package = Package(
     name: "fanknob",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS(.v15)],
     targets: [
         // Shared engine: SMC access, fan/temp model, daemon client.
         .target(
@@ -25,5 +25,8 @@ let package = Package(
             name: "FanknobApp",
             dependencies: ["FanknobCore"]
         ),
-    ]
+    ],
+    // Keep Swift 5 semantics: the daemon/app manage threading manually and
+    // don't need Swift 6 strict-concurrency enforcement.
+    swiftLanguageModes: [.v5]
 )

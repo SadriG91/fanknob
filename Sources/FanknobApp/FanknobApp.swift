@@ -13,8 +13,9 @@ struct FanknobApp: App {
         MenuBarExtra {
             PopoverView(model: model)
         } label: {
-            // SF Symbol + live temperature, rendered in the menu bar.
-            Text("\(Image(systemName: "fanblades"))  \(model.menuLabel)")
+            // Icon + live temperature in the menu bar.
+            Image(systemName: "fanblades")
+            Text(model.menuLabel)
         }
         .menuBarExtraStyle(.window)   // rich popover content (sliders, gauges)
     }

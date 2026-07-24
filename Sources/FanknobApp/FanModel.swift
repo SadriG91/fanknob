@@ -25,16 +25,18 @@ final class FanModel: ObservableObject {
     @Published var holdSeconds = 0
     @Published var holdDeadline: Date?
 
+    /// True while the user is dragging the slider (don't sync from hardware then).
+    @Published var editing = false
+    /// Optimistic current mode for the UI. Updated instantly on user action and
+    /// reconciled with the hardware each tick.
+    @Published var manual = false
+
     let chip = chipName()
 
     init() {
         opened = controller.opened
-        // Seed from the current fan target (init runs before the timer, so this
-        // is the only main-thread SMC access; afterwards it's workQueue-only).
         let snap = controller.snapshot()
         publish(snap: snap, writable: controller.canWrite)
-        knob = snap.fans.first?.knob ?? 0
-
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.refresh()
         }
@@ -48,8 +50,6 @@ final class FanModel: ObservableObject {
         return "—"
     }
 
-    var anyManual: Bool { fans.contains { $0.managed } }
-
     var countdown: String {
         guard let d = holdDeadline else { return "" }
         let s = max(0, Int(d.timeIntervalSinceNow.rounded()))
@@ -58,14 +58,7 @@ final class FanModel: ObservableObject {
 
     // MARK: Polling
 
-    private func refresh() {
-        workQueue.async { [weak self] in
-            guard let self else { return }
-            let snap = self.controller.snapshot()
-            let writable = self.controller.canWrite
-            DispatchQueue.main.async { self.publish(snap: snap, writable: writable) }
-        }
-    }
+    private func refresh() { pollOnce() }
 
     /// Must be called on the main queue.
     private func publish(snap: Snapshot, writable: Bool) {
@@ -74,21 +67,55 @@ final class FanModel: ObservableObject {
         gpu = snap.temps.gpu
         sensorCount = snap.temps.all.count
         canWrite = writable
+        // Reflect reality when the user isn't turning the knob. The knob is
+        // synced from hardware ONLY in auto mode — in manual the knob is the
+        // user's setpoint, and syncing it would race with a just-applied value
+        // and yank the slider back for a frame.
+        if !editing {
+            manual = snap.fans.contains { $0.managed }
+            if !manual, let k = snap.fans.first?.knob { knob = k }
+        }
         if let d = holdDeadline, Date() >= d { holdDeadline = nil }
+    }
+
+    /// Read hardware once, off the main queue, then publish. Used both by the
+    /// periodic timer and right after a write so the UI updates immediately.
+    private func pollOnce() {
+        workQueue.async { [weak self] in
+            guard let self else { return }
+            let snap = self.controller.snapshot()
+            let writable = self.controller.canWrite
+            DispatchQueue.main.async { self.publish(snap: snap, writable: writable) }
+        }
     }
 
     // MARK: Control (called from the UI on the main queue)
 
-    func applyKnob() {
+    /// Segmented Auto/Manual control.
+    func setMode(_ toManual: Bool) {
+        if toManual { enterManual() } else { setAuto() }
+    }
+
+    func enterManual() {
         guard canWrite else { return }
-        let k = knob, h = holdSeconds
-        holdDeadline = h > 0 ? Date().addingTimeInterval(Double(h)) : nil
-        workQueue.async { [weak self] in self?.controller.setKnob(k, holdSeconds: h) }
+        applyKnob()   // takes manual control at the current knob position
     }
 
     func setAuto() {
         guard canWrite else { return }
+        manual = false
         holdDeadline = nil
+        // Serial queue: the write runs first, then pollOnce reads the new state.
         workQueue.async { [weak self] in self?.controller.auto() }
+        pollOnce()
+    }
+
+    func applyKnob() {
+        guard canWrite else { return }
+        manual = true
+        let k = knob, h = holdSeconds
+        holdDeadline = h > 0 ? Date().addingTimeInterval(Double(h)) : nil
+        workQueue.async { [weak self] in self?.controller.setKnob(k, holdSeconds: h) }
+        pollOnce()
     }
 }

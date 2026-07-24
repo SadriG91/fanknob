@@ -6,17 +6,18 @@ import FanknobCore
 
 // MARK: - Shared bits
 
-/// Green→red gradient for a temperature value.
+/// Restrained heat cue: calm grey when cool, warming only when it matters.
 func tempColor(_ c: Double) -> Color {
     switch c {
-    case ..<45: return .teal
-    case ..<58: return .green
-    case ..<70: return Color(red: 0.72, green: 0.78, blue: 0.16)
-    case ..<80: return .yellow
-    case ..<88: return .orange
+    case ..<68: return .secondary
+    case ..<82: return .orange
     default:    return .red
     }
 }
+
+/// The single accent used for the active/manual state — the user's system
+/// accent color, so it stays tasteful and neutral. Everything else is greyscale.
+let activeAccent = Color.accentColor
 
 /// A smooth, animated gauge bar (value is 0…1).
 struct GaugeBar: View {
@@ -44,9 +45,9 @@ struct ModeBadge: View {
     var body: some View {
         Text(managed ? "MANUAL" : "AUTO")
             .font(.system(size: 9, weight: .semibold))
-            .foregroundStyle(managed ? Color.pink : Color.secondary)
+            .foregroundStyle(managed ? activeAccent : Color.secondary)
             .padding(.horizontal, 6).padding(.vertical, 2)
-            .background((managed ? Color.pink : Color.secondary).opacity(0.14), in: Capsule())
+            .background((managed ? activeAccent : Color.secondary).opacity(0.14), in: Capsule())
     }
 }
 
@@ -55,6 +56,10 @@ struct ModeBadge: View {
 struct PopoverView: View {
     @ObservedObject var model: FanModel
 
+    private var modeBinding: Binding<Bool> {
+        Binding(get: { model.manual }, set: { model.setMode($0) })
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
@@ -62,7 +67,7 @@ struct PopoverView: View {
             temps
             if !model.fans.isEmpty { Divider(); fans }
             Divider()
-            knob
+            control
             Divider()
             statusBar
         }
@@ -70,18 +75,21 @@ struct PopoverView: View {
         .frame(width: 320)
     }
 
-    // MARK: Sections
+    // MARK: Header
 
     private var header: some View {
         HStack(spacing: 8) {
             Image(systemName: "fanblades")
-                .foregroundStyle(.cyan)
+                .foregroundStyle(model.manual ? activeAccent : .secondary)
                 .font(.system(size: 15, weight: .medium))
+                .symbolEffect(.pulse, isActive: model.manual)
             Text("fanknob").font(.headline)
             Spacer()
             Text(model.chip).font(.caption).foregroundStyle(.secondary)
         }
     }
+
+    // MARK: Temps
 
     private var temps: some View {
         VStack(spacing: 10) {
@@ -104,6 +112,8 @@ struct PopoverView: View {
         }
     }
 
+    // MARK: Fans
+
     private var fans: some View {
         VStack(spacing: 10) {
             ForEach(model.fans, id: \.index) { f in
@@ -111,74 +121,94 @@ struct PopoverView: View {
                     Text("Fan \(f.index)").font(.callout).foregroundStyle(.secondary)
                         .frame(width: 44, alignment: .leading)
                     GaugeBar(value: f.max > f.min ? (f.actual - f.min) / (f.max - f.min) : 0,
-                             tint: .cyan)
+                             tint: f.managed ? activeAccent : .secondary)
                     Text("\(Int(f.actual.rounded()))")
                         .font(.callout.monospacedDigit())
-                        .frame(width: 44, alignment: .trailing)
+                        .frame(width: 46, alignment: .trailing)
                     ModeBadge(managed: f.managed)
                 }
             }
         }
     }
 
-    private var knob: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Knob").font(.headline)
-                Spacer()
-                Text("\(Int(model.knob))%")
-                    .font(.title3.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(model.canWrite ? .pink : .secondary)
-            }
+    // MARK: Control
 
-            Slider(value: $model.knob, in: 0...100, step: 1) { editing in
-                if !editing { model.applyKnob() }
+    private var control: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Mode — the clear source of truth.
+            Picker("", selection: modeBinding) {
+                Label("Auto", systemImage: "a.circle").tag(false)
+                Label("Manual", systemImage: "hand.point.up.left").tag(true)
             }
-            .tint(.pink)
+            .pickerStyle(.segmented)
+            .labelsHidden()
             .disabled(!model.canWrite)
 
-            HStack(spacing: 8) {
-                Button {
-                    model.setAuto()
-                } label: {
-                    Label("Auto", systemImage: "a.circle").frame(maxWidth: .infinity)
+            // Knob
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Fan speed").font(.subheadline).foregroundStyle(.secondary)
+                    Spacer()
+                    if model.manual {
+                        Text("\(Int(model.knob))%")
+                            .font(.title3.monospacedDigit().weight(.bold))
+                            .foregroundStyle(activeAccent)
+                    } else {
+                        Text("auto").font(.subheadline.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                .buttonStyle(.bordered)
+                Slider(value: $model.knob, in: 0...100) { editing in
+                    model.editing = editing
+                    if editing { model.manual = true }   // grabbing = manual intent
+                    else { model.applyKnob() }
+                }
+                .tint(model.manual ? activeAccent : Color.secondary)
                 .disabled(!model.canWrite)
-
-                Picker("", selection: $model.holdSeconds) {
-                    Text("Off").tag(0)
-                    Text("30s").tag(30)
-                    Text("1m").tag(60)
-                    Text("2m").tag(120)
-                    Text("5m").tag(300)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .disabled(!model.canWrite)
-                .onChange(of: model.holdSeconds) { _ in
-                    if model.anyManual { model.applyKnob() }
-                }
             }
 
-            if model.holdDeadline != nil {
-                HStack(spacing: 5) {
-                    Image(systemName: "timer").font(.caption2)
-                    Text("reverts to auto in \(model.countdown)")
+            // Hold — only meaningful in manual mode.
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Text("Hold").font(.subheadline).foregroundStyle(.secondary)
+                    Picker("", selection: $model.holdSeconds) {
+                        Text("Off").tag(0)
+                        Text("30s").tag(30)
+                        Text("1m").tag(60)
+                        Text("2m").tag(120)
+                        Text("5m").tag(300)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .onChange(of: model.holdSeconds) { _, _ in
+                        if model.manual { model.applyKnob() }
+                    }
                 }
-                .font(.caption).foregroundStyle(.pink)
+                if model.holdDeadline != nil {
+                    HStack(spacing: 5) {
+                        Image(systemName: "timer").font(.caption2)
+                        Text("reverts to auto in \(model.countdown)")
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
+                }
             }
+            .disabled(!model.canWrite || !model.manual)
+            .opacity(model.manual ? 1 : 0.4)
         }
     }
 
+    // MARK: Status
+
     private var statusBar: some View {
-        HStack(spacing: 7) {
-            Circle().fill(model.canWrite ? Color.green : Color.orange)
+        HStack(spacing: 6) {
+            Circle()
+                .fill(model.canWrite ? Color.green : Color.orange)
                 .frame(width: 7, height: 7)
-            Text(model.canWrite ? "helper connected"
-                                : "helper not installed — run “sudo make install”")
-                .font(.caption).foregroundStyle(.secondary)
-                .lineLimit(1).minimumScaleFactor(0.8)
+                .help(model.canWrite ? "Helper daemon connected"
+                                     : "Helper not installed — run “sudo make install”")
+            if !model.canWrite {
+                Text("setup needed").font(.caption2).foregroundStyle(.secondary)
+            }
             Spacer()
             Button("Quit") { NSApp.terminate(nil) }
                 .buttonStyle(.plain)
