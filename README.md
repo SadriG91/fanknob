@@ -54,7 +54,7 @@ cp -R "$(brew --prefix)/opt/fanknob/Fanknob.app" /Applications/
 
 Installs a prebuilt bottle in seconds — **no Xcode required**. If no bottle
 matches your system, Homebrew falls back to building from source (which needs
-Xcode 16+). Either way: no code signing or Gatekeeper hoops.
+Xcode 16+).
 
 ### Updating
 
