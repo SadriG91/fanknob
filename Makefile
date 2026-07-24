@@ -47,8 +47,12 @@ clean:
 	swift package clean
 	rm -rf build
 
-install: all app
+# install only COPIES artifacts — it never builds. Building as root would
+# leave root-owned files in .build/ and build/ that break later user builds.
+install:
 	@[ "$$(id -u)" = "0" ] || { echo "run: sudo make install"; exit 1; }
+	@[ -x $(BIN)/fanknob ] && [ -x $(BIN)/fanknobd ] && [ -d build/$(APP) ] || \
+		{ echo "artifacts missing — run 'make app' first (as your normal user), then sudo make install"; exit 1; }
 	install -m 755 $(BIN)/fanknob  $(PREFIX)/fanknob
 	install -m 755 $(BIN)/fanknobd $(PREFIX)/fanknobd
 	install -m 644 $(PLIST) $(PLISTDIR)/$(PLIST)

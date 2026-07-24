@@ -192,6 +192,10 @@ private struct ControlSection: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                // Constant height: the big % and the small "auto" text have
+                // different metrics, and without this the popover resizes on
+                // every mode switch.
+                .frame(height: 24)
                 Slider(value: $model.knob, in: 0...100) { editing in
                     model.editing = editing
                     if editing { model.manual = true }   // grabbing = manual intent
@@ -221,9 +225,7 @@ private struct ControlSection: View {
                         if model.manual { model.applyKnob() }
                     }
                 }
-                if model.holdDeadline != nil {
-                    HoldCountdown(model: model)
-                }
+                HoldCountdown(model: model)   // always present; hides via opacity
             }
             .disabled(!model.canWrite || !model.manual)
             .opacity(model.manual ? 1 : 0.4)
@@ -233,7 +235,8 @@ private struct ControlSection: View {
 
 /// Isolated child view: `holdRemaining` ticks every second while a hold is
 /// armed, and this boundary keeps those updates from rebuilding the pickers
-/// (a rebuild mid-click cancels AppKit's control tracking).
+/// (a rebuild mid-click cancels AppKit's control tracking). Always occupies
+/// its line (hidden via opacity) so arming a hold never resizes the popover.
 private struct HoldCountdown: View {
     var model: FanModel
 
@@ -243,6 +246,8 @@ private struct HoldCountdown: View {
             Text("reverts to auto in \(model.countdown)")
         }
         .font(.caption).foregroundStyle(.secondary)
+        .padding(.top, 4)
+        .opacity(model.holdDeadline != nil ? 1 : 0)
     }
 }
 
@@ -253,10 +258,14 @@ private struct StatusSection: View {
 
     var body: some View {
         HStack(spacing: 6) {
+            // Generous hit area: a 7 pt circle alone is nearly impossible to
+            // hover, so the tooltip would never be discovered.
             Circle()
                 .fill(model.canWrite ? Color.green : Color.orange)
                 .frame(width: 7, height: 7)
-                .help(model.canWrite ? "Helper daemon connected"
+                .frame(width: 20, height: 20)
+                .contentShape(Rectangle())
+                .help(model.canWrite ? "Helper daemon connected — fan control available"
                                      : "Helper not installed — run “sudo make install”")
             if !model.canWrite {
                 Text("setup needed").font(.caption2).foregroundStyle(.secondary)
