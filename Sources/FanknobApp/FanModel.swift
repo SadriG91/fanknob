@@ -114,15 +114,18 @@ final class FanModel {
         if cpu != snap.temps.cpu { cpu = snap.temps.cpu }
         if gpu != snap.temps.gpu { gpu = snap.temps.gpu }
         if canWrite != writable { canWrite = writable }
-        // Reconcile mode/knob with hardware ONLY when the user isn't mid-action:
+        // Reconcile mode with hardware ONLY when the user isn't mid-action:
         // a poll snapshotted before a write must not undo the optimistic state.
+        //
+        // Deliberately NO knob sync here: in auto the firmware target drifts
+        // across whole-% boundaries almost every poll, and each sync re-rendered
+        // the control section — if that rebuild landed between mouse-down and
+        // mouse-up on the mode toggle, AppKit cancelled the click ("sticky
+        // toggle"). The knob is the user's setpoint; it's seeded on entering
+        // Manual instead.
         if !editing && writesInFlight == 0 {
             let hwManual = snap.fans.contains { $0.managed }
             if manual != hwManual { manual = hwManual }
-            if !hwManual, let k = snap.fans.first?.knob {
-                let rounded = k.rounded()   // whole-% steps; don't jitter the slider
-                if knob != rounded { knob = rounded }
-            }
         }
         if let d = holdDeadline {
             let left = max(0, Int(d.timeIntervalSinceNow.rounded()))
@@ -148,7 +151,14 @@ final class FanModel {
     // MARK: Control (called from the UI on the main queue)
 
     func setMode(_ toManual: Bool) {
-        if toManual { applyKnob() } else { setAuto() }
+        if toManual {
+            // Seed the knob from the current speed so Manual takes over right
+            // where the firmware left off (fans data is ≤1 s old).
+            if !manual, let k = fans.first?.knob { knob = k.rounded() }
+            applyKnob()
+        } else {
+            setAuto()
+        }
     }
 
     func setAuto() {

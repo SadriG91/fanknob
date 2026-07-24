@@ -174,6 +174,7 @@ private struct ControlSection: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            .frame(maxWidth: .infinity)   // full-width = bigger click targets
             .disabled(!model.canWrite)
 
             // Knob
@@ -220,16 +221,27 @@ private struct ControlSection: View {
                     }
                 }
                 if model.holdDeadline != nil {
-                    HStack(spacing: 5) {
-                        Image(systemName: "timer").font(.caption2)
-                        Text("reverts to auto in \(model.countdown)")
-                    }
-                    .font(.caption).foregroundStyle(.secondary)
+                    HoldCountdown(model: model)
                 }
             }
             .disabled(!model.canWrite || !model.manual)
             .opacity(model.manual ? 1 : 0.4)
         }
+    }
+}
+
+/// Isolated child view: `holdRemaining` ticks every second while a hold is
+/// armed, and this boundary keeps those updates from rebuilding the pickers
+/// (a rebuild mid-click cancels AppKit's control tracking).
+private struct HoldCountdown: View {
+    var model: FanModel
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "timer").font(.caption2)
+            Text("reverts to auto in \(model.countdown)")
+        }
+        .font(.caption).foregroundStyle(.secondary)
     }
 }
 
