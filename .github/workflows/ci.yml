@@ -6,7 +6,23 @@ name: CI
 on:
   push:
     branches: [main]
+    paths:
+      - "Sources/**"
+      - "Tests/**"
+      - "Package.swift"
+      - "Makefile"
+      - "app/**"
+      - "assets/AppIcon.icns"   # bundled into the app; verified by CI
+      - ".github/workflows/ci.yml"
   pull_request:
+    paths:
+      - "Sources/**"
+      - "Tests/**"
+      - "Package.swift"
+      - "Makefile"
+      - "app/**"
+      - "assets/AppIcon.icns"
+      - ".github/workflows/ci.yml"
 
 permissions:
   contents: read
