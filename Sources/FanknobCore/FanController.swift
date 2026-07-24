@@ -25,9 +25,20 @@ public struct Snapshot {
     }
 }
 
+/// How much of the hardware to read in one snapshot.
+public enum SnapshotScope {
+    /// Everything: all temp sensors + fans. ~30 ms of SMC calls.
+    case full
+    /// Just enough for a menu-bar readout: the CPU-cluster sensors (falling
+    /// back to GPU, then all, on machines without Tp*/Tg* naming) + fans.
+    /// A few ms instead of ~30.
+    case light
+}
+
 public final class FanController {
     private let smc = SMC()
     private let tempKeys: [UInt32]
+    private let lightKeys: [UInt32]
 
     /// True if the SMC opened successfully (reads are possible).
     public let opened: Bool
@@ -37,15 +48,19 @@ public final class FanController {
         do { try smc.open(); ok = true } catch { ok = false }
         opened = ok
         tempKeys = ok ? discoverTempKeys(smc) : []
+        let cpuKeys = tempKeys.filter { fourCCString($0).hasPrefix("Tp") }
+        let gpuKeys = tempKeys.filter { fourCCString($0).hasPrefix("Tg") }
+        lightKeys = cpuKeys.isEmpty ? (gpuKeys.isEmpty ? tempKeys : gpuKeys) : cpuKeys
     }
 
     /// Can we perform writes? True if root, or the daemon is reachable.
     public var canWrite: Bool { geteuid() == 0 || daemonReachable() }
 
-    public func snapshot() -> Snapshot {
+    public func snapshot(_ scope: SnapshotScope = .full) -> Snapshot {
         guard opened else { return Snapshot(fans: [], temps: TempReport(all: [], cpu: nil, gpu: nil)) }
         let fans = (0..<fanCount(smc)).compactMap { readFan(smc, $0) }
-        let temps = tempReport(from: readTempsCached(smc, tempKeys))
+        let keys = scope == .full ? tempKeys : lightKeys
+        let temps = tempReport(from: readTempsCached(smc, keys))
         return Snapshot(fans: fans, temps: temps)
     }
 

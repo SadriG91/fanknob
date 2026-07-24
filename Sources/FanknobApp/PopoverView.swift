@@ -77,6 +77,7 @@ struct PopoverView: View {
         }
         .padding(16)
         .frame(width: 320)
+        .onAppear { model.popoverOpened() }   // fresh data the moment it opens
     }
 }
 
@@ -88,7 +89,8 @@ private struct HeaderSection: View {
     var body: some View {
         HStack(spacing: 8) {
             SpinningFanIcon(revsPerSecond: model.iconRevsPerSecond,
-                            tint: model.manual ? activeAccent : .secondary)
+                            tint: model.manual ? activeAccent : .secondary,
+                            paused: !model.popoverShown)
             Text("fanknob").font(.headline)
             Spacer()
             Text(model.chip).font(.caption).foregroundStyle(.secondary)
@@ -103,11 +105,14 @@ private struct HeaderSection: View {
 private struct SpinningFanIcon: View {
     var revsPerSecond: Double
     var tint: Color
+    /// MenuBarExtra(.window) keeps this view alive while the popover is
+    /// closed, so the timeline must be paused explicitly or it ticks forever.
+    var paused: Bool
     @State private var angle = 0.0
     @State private var lastTick: Date?
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: paused)) { context in
             Image(systemName: "fanblades")
                 .foregroundStyle(tint)
                 .font(.system(size: 15, weight: .medium))
