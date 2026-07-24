@@ -87,13 +87,38 @@ private struct HeaderSection: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "fanblades")
-                .foregroundStyle(model.manual ? activeAccent : .secondary)
-                .font(.system(size: 15, weight: .medium))
-                .symbolEffect(.pulse, isActive: model.manual)
+            SpinningFanIcon(revsPerSecond: model.iconRevsPerSecond,
+                            tint: model.manual ? activeAccent : .secondary)
             Text("fanknob").font(.headline)
             Spacer()
             Text(model.chip).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// Fan icon spinning at a rate that tracks the real fan speed. The angle is
+/// integrated frame-by-frame (angle += dt · speed) so speed changes are
+/// seamless — no animation restarts. Isolated child view: the ~30 fps tick
+/// re-renders only this icon, and TimelineView pauses when the popover closes.
+private struct SpinningFanIcon: View {
+    var revsPerSecond: Double
+    var tint: Color
+    @State private var angle = 0.0
+    @State private var lastTick: Date?
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+            Image(systemName: "fanblades")
+                .foregroundStyle(tint)
+                .font(.system(size: 15, weight: .medium))
+                .rotationEffect(.degrees(angle))
+                .onChange(of: context.date) { _, now in
+                    // Clamp dt so a pause (popover closed) can't cause a jump.
+                    let dt = (lastTick.map { now.timeIntervalSince($0) } ?? 0).clamped(0, 0.2)
+                    lastTick = now
+                    angle = (angle + dt * revsPerSecond * 360)
+                        .truncatingRemainder(dividingBy: 360)
+                }
         }
     }
 }

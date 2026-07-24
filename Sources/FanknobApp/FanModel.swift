@@ -114,6 +114,15 @@ final class FanModel {
         String(format: "%d:%02d", holdRemaining / 60, holdRemaining % 60)
     }
 
+    /// Spin rate for the popover's fan icon: gentle at idle, brisk at full
+    /// blast, tracking the fastest fan's position in its RPM range.
+    var iconRevsPerSecond: Double {
+        let fraction = fans
+            .compactMap { $0.max > $0.min ? ($0.actual - $0.min) / ($0.max - $0.min) : nil }
+            .max() ?? 0
+        return 0.4 + 2.6 * fraction.clamped(0, 1)
+    }
+
     // MARK: Polling (pollOnce/publish run on the main queue)
 
     private func pollOnce() {
