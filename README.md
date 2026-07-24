@@ -43,7 +43,7 @@ com.fanknob.daemon.plist
 ## Install with Homebrew (recommended)
 
 ```sh
-brew install SadriG91/fanknob/fanknob
+brew install SadriG91/tap/fanknob
 
 # fan control needs the root helper daemon (one time):
 sudo brew services start fanknob

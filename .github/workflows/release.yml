@@ -3,7 +3,7 @@
 # `brew upgrade fanknob` picks it up with zero manual steps.
 #
 # The tap bump needs a TAP_PUSH_TOKEN repo secret: a fine-grained PAT with
-# Contents: read/write on SadriG91/homebrew-fanknob. Without it, that step is
+# Contents: read/write on SadriG91/homebrew-tap. Without it, that step is
 # skipped and the formula must be bumped by hand.
 name: Release
 
@@ -37,14 +37,14 @@ jobs:
     env:
       TAP_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
     steps:
-      - name: Bump formula in homebrew-fanknob
+      - name: Bump formula in homebrew-tap
         if: env.TAP_TOKEN != ''
         run: |
           TAG="${GITHUB_REF_NAME}"
           URL="https://github.com/SadriG91/fanknob/archive/refs/tags/${TAG}.tar.gz"
           SHA=$(curl -sL "$URL" | sha256sum | cut -d' ' -f1)
-          git clone "https://x-access-token:${TAP_TOKEN}@github.com/SadriG91/homebrew-fanknob.git"
-          cd homebrew-fanknob
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/SadriG91/homebrew-tap.git"
+          cd homebrew-tap
           sed -i -E "s|url \"[^\"]+\"|url \"${URL}\"|" Formula/fanknob.rb
           sed -i -E "s|sha256 \"[^\"]+\"|sha256 \"${SHA}\"|" Formula/fanknob.rb
           git config user.name "github-actions[bot]"
