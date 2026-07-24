@@ -1,0 +1,33 @@
+# Build + unit tests on every push/PR. Runs on an Apple Silicon macOS runner.
+# (The UI acceptance test — make ui-test — needs live SMC hardware and
+# Accessibility permission, so it stays a dev-machine test.)
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build (release)
+        run: swift build -c release
+
+      - name: Unit tests
+        run: swift test
+
+      - name: Assemble app bundle
+        run: make app
+
+      - name: Verify bundle
+        run: |
+          plutil -lint build/Fanknob.app/Contents/Info.plist
+          test -x build/Fanknob.app/Contents/MacOS/FanknobApp
+          test -f build/Fanknob.app/Contents/Resources/AppIcon.icns

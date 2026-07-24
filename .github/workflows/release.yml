@@ -1,0 +1,57 @@
+# Release pipeline: push a v* tag and this (1) builds + tests, (2) creates the
+# GitHub release, (3) bumps the Homebrew tap formula to the new version — so
+# `brew upgrade fanknob` picks it up with zero manual steps.
+#
+# The tap bump needs a TAP_PUSH_TOKEN repo secret: a fine-grained PAT with
+# Contents: read/write on SadriG91/homebrew-fanknob. Without it, that step is
+# skipped and the formula must be bumped by hand.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build (release)
+        run: swift build -c release
+
+      - name: Unit tests
+        run: swift test
+
+      - name: Create GitHub release (if not already created)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes || echo "release already exists"
+
+  bump-tap:
+    needs: release
+    runs-on: ubuntu-latest
+    env:
+      TAP_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
+    steps:
+      - name: Bump formula in homebrew-fanknob
+        if: env.TAP_TOKEN != ''
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          URL="https://github.com/SadriG91/fanknob/archive/refs/tags/${TAG}.tar.gz"
+          SHA=$(curl -sL "$URL" | sha256sum | cut -d' ' -f1)
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/SadriG91/homebrew-fanknob.git"
+          cd homebrew-fanknob
+          sed -i -E "s|url \"[^\"]+\"|url \"${URL}\"|" Formula/fanknob.rb
+          sed -i -E "s|sha256 \"[^\"]+\"|sha256 \"${SHA}\"|" Formula/fanknob.rb
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "fanknob ${TAG}"
+          git push
+
+      - name: Skipped notice
+        if: env.TAP_TOKEN == ''
+        run: echo "TAP_PUSH_TOKEN not configured — bump Formula/fanknob.rb in the tap manually."

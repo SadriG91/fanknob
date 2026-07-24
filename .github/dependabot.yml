@@ -1,0 +1,8 @@
+# Keep GitHub Actions pinned versions current. (The Swift package itself has
+# zero dependencies, so there's nothing else to watch.)
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

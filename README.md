@@ -4,6 +4,8 @@
 
 # fanknob — fan control for Apple Silicon Macs
 
+[![CI](https://github.com/SadriG91/fanknob/actions/workflows/ci.yml/badge.svg)](https://github.com/SadriG91/fanknob/actions/workflows/ci.yml)
+
 Control your Mac's fans with a **0–100 knob** (mapped onto each fan's own
 min→max RPM range) and monitor CPU/GPU temperatures. Three faces on one engine:
 
@@ -38,7 +40,29 @@ app/Info.plist   app bundle metadata
 com.fanknob.daemon.plist
 ```
 
-## Build & install
+## Install with Homebrew (recommended)
+
+```sh
+brew install SadriG91/fanknob/fanknob
+
+# fan control needs the root helper daemon (one time):
+sudo brew services start fanknob
+
+# optional: put the menu-bar app in /Applications
+cp -R "$(brew --prefix)/opt/fanknob/Fanknob.app" /Applications/
+```
+
+The formula builds from source on your machine — no code signing or
+Gatekeeper hoops.
+
+### Updating
+
+```sh
+brew update && brew upgrade fanknob
+sudo brew services restart fanknob
+```
+
+## Build from source
 
 ```sh
 git clone https://github.com/SadriG91/fanknob.git
@@ -46,6 +70,8 @@ cd fanknob
 make app             # build everything + assemble Fanknob.app
 sudo make install    # install CLI + daemon + app, load the daemon
 ```
+
+> Use ONE install method — Homebrew or `make install`, not both.
 
 All targets:
 
