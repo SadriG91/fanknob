@@ -7,16 +7,19 @@ import FanknobCore
 @main
 struct FanknobApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var model = FanModel()
+    @State private var model = FanModel()
 
     var body: some Scene {
         MenuBarExtra {
             PopoverView(model: model)
         } label: {
-            // Icon + live temperature in the menu bar. Monospaced digits keep
-            // the width fixed so the item doesn't jitter as the number changes.
+            // Icon + live temperature in the menu bar. An explicit monospaced
+            // font keeps the width fixed so the item doesn't jitter as the
+            // number changes (the .monospacedDigit() modifier isn't honored in
+            // the status-item rendering context).
             Image(systemName: "fanblades")
-            Text(model.menuLabel).monospacedDigit()
+            Text(model.menuLabel)
+                .font(.system(size: 13, weight: .regular, design: .monospaced))
         }
         .menuBarExtraStyle(.window)   // rich popover content (sliders, gauges)
     }

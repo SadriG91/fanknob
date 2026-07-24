@@ -6,11 +6,13 @@ import FanknobCore
 
 // MARK: - Shared bits
 
-/// Restrained heat cue: calm grey when cool, warming only when it matters.
+/// Restrained heat cue: calm grey through normal (warm) temps, warming only
+/// when it's genuinely hot. Apple Silicon idles warm, so keep the grey range
+/// generous.
 func tempColor(_ c: Double) -> Color {
     switch c {
-    case ..<68: return .secondary
-    case ..<82: return .orange
+    case ..<82: return .secondary
+    case ..<92: return .orange
     default:    return .red
     }
 }
@@ -36,7 +38,7 @@ struct GaugeBar: View {
             }
         }
         .frame(height: height)
-        .animation(.easeOut(duration: 0.45), value: value)
+        .animation(.easeOut(duration: 0.28), value: value)
     }
 }
 
@@ -54,7 +56,7 @@ struct ModeBadge: View {
 // MARK: - Popover
 
 struct PopoverView: View {
-    @ObservedObject var model: FanModel
+    @Bindable var model: FanModel
 
     private var modeBinding: Binding<Bool> {
         Binding(get: { model.manual }, set: { model.setMode($0) })
