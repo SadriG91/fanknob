@@ -99,9 +99,9 @@ func daemonReachable() -> Bool {
     }
 }
 
-func applyKnob(_ smc: SMC, _ pct: Double) {
+func applyKnob(_ smc: SMC, _ pct: Double, seconds: Int = 0) {
     if geteuid() == 0 { for i in 0..<fanCount(smc) { _ = try? setFanKnob(smc, i, pct: pct) } }
-    else { _ = sendToDaemon("set \(Int(pct))") }
+    else { _ = sendToDaemon(seconds > 0 ? "set \(Int(pct)) \(seconds)" : "set \(Int(pct))") }
 }
 
 func applyAutoTUI(_ smc: SMC) {
@@ -122,7 +122,16 @@ func sysctlString(_ name: String) -> String? {
 
 // MARK: - Rendering
 
-func renderFrame(_ smc: SMC, tempKeys: [UInt32], knob: Double, canWrite: Bool, chip: String) -> String {
+// Human labels for the cycle of hold durations.
+let holdCycle = [0, 30, 60, 120, 300]
+func holdLabel(_ s: Int) -> String {
+    switch s { case 0: return "off"; case 30: return "30s"; case 60: return "1m"
+    case 120: return "2m"; case 300: return "5m"; default: return "\(s)s" }
+}
+func fmtClock(_ seconds: Int) -> String { String(format: "%d:%02d", seconds / 60, seconds % 60) }
+
+func renderFrame(_ smc: SMC, tempKeys: [UInt32], knob: Double, canWrite: Bool,
+                 chip: String, holdSeconds: Int, holdDeadline: Date?) -> String {
     let W = 24  // gauge width
     var L: [String] = []
 
@@ -165,10 +174,22 @@ func renderFrame(_ smc: SMC, tempKeys: [UInt32], knob: Double, canWrite: Bool, c
     L.append(String(format: " \(Ansi.bold)KNOB\(Ansi.reset) %3.0f%%  %@  %@",
                     knob, bar(knob / 100, width: W, color: knobColor) as CVarArg, state as CVarArg))
 
+    // Hold / auto-revert
+    let holdText: String
+    if let d = holdDeadline {
+        let left = max(0, Int(d.timeIntervalSinceNow.rounded()))
+        holdText = "\(Ansi.fg(213))\(fmtClock(left))\(Ansi.reset) \(Ansi.dim)→ auto\(Ansi.reset)"
+    } else if holdSeconds > 0 {
+        holdText = "\(Ansi.fg(250))\(holdLabel(holdSeconds))\(Ansi.reset) \(Ansi.dim)armed\(Ansi.reset)"
+    } else {
+        holdText = "\(Ansi.dim)off\(Ansi.reset)"
+    }
+    L.append(" \(Ansi.fg(250))HOLD\(Ansi.reset) \(holdText)")
+
     // Footer
     L.append(" \(Ansi.fg(240))" + String(repeating: "─", count: 46) + Ansi.reset)
     if canWrite {
-        L.append(" \(Ansi.dim)←/→ ±5   ↑/↓ ±1   1-9 preset   a auto   q quit\(Ansi.reset)")
+        L.append(" \(Ansi.dim)←/→ ±5  ↑/↓ ±1  1-9 preset  t hold  a auto  q quit\(Ansi.reset)")
     } else {
         L.append(" \(Ansi.dim)q quit   ·   run 'sudo make install' to enable control\(Ansi.reset)")
     }
@@ -185,6 +206,8 @@ func runTUI(_ smc: SMC) {
 
     // Seed the knob from the current fan target.
     var knob = (0..<fanCount(smc)).compactMap { readFan(smc, $0) }.first?.knob ?? 0
+    var holdSeconds = 0
+    var holdDeadline: Date? = nil
 
     enableRawMode()
     signal(SIGINT, signalHandler)
@@ -192,37 +215,58 @@ func runTUI(_ smc: SMC) {
     print(Ansi.altOn + Ansi.hide, terminator: "")
     defer { restoreTerminal() }
 
+    // Apply the current knob (with the selected hold) and (re)arm the countdown.
+    func arm() {
+        guard canWrite else { return }
+        applyKnob(smc, knob, seconds: holdSeconds)
+        holdDeadline = holdSeconds > 0 ? Date().addingTimeInterval(Double(holdSeconds)) : nil
+    }
+
     var running = true
     while running {
-        print(renderFrame(smc, tempKeys: tempKeys, knob: knob, canWrite: canWrite, chip: chip), terminator: "")
+        // Fire the revert when a hold expires. The daemon also reverts on its
+        // own timer (so it happens even if the TUI has quit); calling auto here
+        // is idempotent and keeps the countdown honest while the TUI is alive.
+        if let d = holdDeadline, Date() >= d {
+            if canWrite { applyAutoTUI(smc) }
+            holdDeadline = nil
+        }
+
+        print(renderFrame(smc, tempKeys: tempKeys, knob: knob, canWrite: canWrite,
+                          chip: chip, holdSeconds: holdSeconds, holdDeadline: holdDeadline),
+              terminator: "")
         fflush(stdout)
 
         let keys = waitKey(timeoutMs: 700)
         if keys.isEmpty { continue }   // timeout → just refresh
 
-        var apply = false
         // Arrow keys arrive as ESC [ A/B/C/D.
         if keys.count >= 3, keys[0] == 0x1B, keys[1] == 0x5B {
             switch keys[2] {
-            case 0x41: knob = min(100, knob + 1); apply = true   // up
-            case 0x42: knob = max(0, knob - 1); apply = true     // down
-            case 0x43: knob = min(100, knob + 5); apply = true   // right
-            case 0x44: knob = max(0, knob - 5); apply = true     // left
+            case 0x41: knob = min(100, knob + 1); arm()   // up
+            case 0x42: knob = max(0, knob - 1); arm()     // down
+            case 0x43: knob = min(100, knob + 5); arm()   // right
+            case 0x44: knob = max(0, knob - 5); arm()     // left
             default: break
             }
         } else if let c = keys.first {
             switch c {
-            case UInt8(ascii: "q"), UInt8(ascii: "Q"), 0x03: running = false
-            case UInt8(ascii: "a"), UInt8(ascii: "A"): if canWrite { applyAutoTUI(smc) }
-            case UInt8(ascii: "+"), UInt8(ascii: "="): knob = min(100, knob + 5); apply = true
-            case UInt8(ascii: "-"), UInt8(ascii: "_"): knob = max(0, knob - 5); apply = true
+            case UInt8(ascii: "q"), UInt8(ascii: "Q"), 0x03:
+                running = false
+            case UInt8(ascii: "a"), UInt8(ascii: "A"):
+                if canWrite { applyAutoTUI(smc) }
+                holdDeadline = nil
+            case UInt8(ascii: "t"), UInt8(ascii: "T"):
+                let idx = holdCycle.firstIndex(of: holdSeconds) ?? 0
+                holdSeconds = holdCycle[(idx + 1) % holdCycle.count]
+                arm()
+            case UInt8(ascii: "+"), UInt8(ascii: "="): knob = min(100, knob + 5); arm()
+            case UInt8(ascii: "-"), UInt8(ascii: "_"): knob = max(0, knob - 5); arm()
             case UInt8(ascii: "0")...UInt8(ascii: "9"):
                 knob = Double(c - UInt8(ascii: "0")) * 10   // 1→10% … 9→90%, 0→0%
-                apply = true
+                arm()
             default: break
             }
         }
-
-        if apply && canWrite { applyKnob(smc, knob) }
     }
 }
