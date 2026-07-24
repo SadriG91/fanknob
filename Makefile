@@ -19,8 +19,8 @@ PLISTDIR = /Library/LaunchDaemons
 
 all: $(CLIENT) $(DAEMON)
 
-$(CLIENT): $(CORE) fanknob.swift
-	swiftc -O -parse-as-library $(CORE) fanknob.swift -framework IOKit -o $(CLIENT)
+$(CLIENT): $(CORE) TUI.swift fanknob.swift
+	swiftc -O -parse-as-library $(CORE) TUI.swift fanknob.swift -framework IOKit -o $(CLIENT)
 
 $(DAEMON): $(CORE) fanknobd.swift
 	swiftc -O -parse-as-library $(CORE) fanknobd.swift -framework IOKit -o $(DAEMON)

@@ -328,3 +328,37 @@ func readTempReport(_ smc: SMC) -> TempReport {
     }
     return TempReport(all: all, cpu: avg("Tp"), gpu: avg("Tg"))
 }
+
+// For a live view: enumerate the temp keys ONCE, then re-read just those each
+// frame (avoids re-scanning all ~1500 SMC keys on every refresh).
+func discoverTempKeys(_ smc: SMC) -> [UInt32] {
+    let count = smc.keyCount()
+    var keys: [UInt32] = []
+    for i in 0..<count {
+        guard let k = smc.keyAtIndex(i) else { continue }
+        guard fourCCString(k).hasPrefix("T") else { continue }
+        guard let (t, b) = smc.read(k),
+              fourCCString(t).trimmingCharacters(in: .whitespaces) == "flt",
+              let v = decodeToDouble(type: t, bytes: b), v > 1, v < 130 else { continue }
+        keys.append(k)
+    }
+    return keys
+}
+
+func readTempsCached(_ smc: SMC, _ keys: [UInt32]) -> [TempSensor] {
+    var out: [TempSensor] = []
+    for k in keys {
+        guard let (t, b) = smc.read(k),
+              let v = decodeToDouble(type: t, bytes: b), v > 1, v < 130 else { continue }
+        out.append(TempSensor(key: fourCCString(k), celsius: v))
+    }
+    return out.sorted { $0.celsius > $1.celsius }
+}
+
+func tempReport(from sensors: [TempSensor]) -> TempReport {
+    func avg(_ prefix: String) -> Double? {
+        let xs = sensors.filter { $0.key.hasPrefix(prefix) }
+        return xs.isEmpty ? nil : xs.reduce(0) { $0 + $1.celsius } / Double(xs.count)
+    }
+    return TempReport(all: sensors, cpu: avg("Tp"), gpu: avg("Tg"))
+}

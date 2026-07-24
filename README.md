@@ -36,12 +36,44 @@ daemon via `launchctl`. After that, from any directory:
 
 ```sh
 fanknob status          # fans + CPU/GPU temperature   (no sudo)
+fanknob tui             # live interactive dashboard    (no sudo to view)
 fanknob temp            # every temperature sensor      (no sudo)
 fanknob set 40          # all fans to 40% of range      (no sudo — via daemon)
 fanknob set 60 --for 120  # hold 60% for 120s, then auto-revert (safety)
 fanknob auto            # back to automatic control      (no sudo — via daemon)
 fanknob keys [prefix]   # dump SMC keys (default 'F')
 ```
+
+### Live TUI
+
+`fanknob tui` opens a full-screen dashboard with live fan and temperature gauges
+and a **knob you turn with the keyboard**:
+
+```
+ fanknob   Apple M2 Pro
+ ──────────────────────────────────────────────
+ Fan 0  3301 rpm  █████▎░░░░░░░░░░░░░░░░░░  auto
+ Fan 1  3556 rpm  ██████▋░░░░░░░░░░░░░░░░░  auto
+ ──────────────────────────────────────────────
+ CPU   81°C  ███████████████████▍░░░░
+ GPU   70°C  ████████████████▋░░░░░░░
+ ──────────────────────────────────────────────
+ KNOB  22%  █████▎░░░░░░░░░░░░░░░░░░  MANUAL
+ ──────────────────────────────────────────────
+ ←/→ ±5   ↑/↓ ±1   1-9 preset   a auto   q quit
+```
+
+| Key       | Action                          |
+|-----------|---------------------------------|
+| `←` / `→` | knob −/+ 5%                     |
+| `↑` / `↓` | knob −/+ 1%                     |
+| `1`–`9`   | jump to 10%–90% (`0` = 0%)      |
+| `a`       | return to automatic control     |
+| `q`       | quit                            |
+
+Turning the knob applies live through the daemon. Without the daemon (and not
+root) the TUI runs read-only — it shows gauges but the knob is disabled until
+`sudo make install`.
 
 ### Safety auto-revert
 

@@ -120,6 +120,7 @@ func usage() {
     fanknob — knob-style fan control for Apple Silicon
 
       fanknob status          fans + temperature
+      fanknob tui             live interactive dashboard (turn the knob)
       fanknob temp            list all temperature sensors
       fanknob keys [prefix]   dump SMC keys (default prefix 'F')
       fanknob set <0-100>     set all fans to knob % of their range
@@ -146,6 +147,7 @@ struct Fanknob {
         switch args[1] {
         case "status": cmdStatus(smc)
         case "temp":   cmdTemp(smc)
+        case "tui", "top": runTUI(smc)
         case "keys":   cmdKeys(smc, prefix: args.count >= 3 ? args[2] : "F")
         case "set":
             guard args.count >= 3, let v = Double(args[2]) else {
