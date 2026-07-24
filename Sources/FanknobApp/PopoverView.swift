@@ -208,24 +208,24 @@ private struct ControlSection: View {
                 .disabled(!model.canWrite)
             }
 
-            // Hold — only meaningful in manual mode.
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
-                    Text("Hold").font(.subheadline).foregroundStyle(.secondary)
-                    Picker("", selection: $model.holdSeconds) {
-                        Text("Off").tag(0)
-                        Text("30s").tag(30)
-                        Text("1m").tag(60)
-                        Text("2m").tag(120)
-                        Text("5m").tag(300)
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .onChange(of: model.holdSeconds) { _, _ in
-                        if model.manual { model.applyKnob() }
-                    }
+            // Hold — only meaningful in manual mode. The label swaps to the
+            // ticking countdown while a hold is armed (same line, same height),
+            // so the popover never resizes and there's no reserved blank line.
+            HStack(spacing: 8) {
+                HoldLabel(model: model)
+                    .frame(width: 38, alignment: .leading)
+                Picker("", selection: $model.holdSeconds) {
+                    Text("Off").tag(0)
+                    Text("30s").tag(30)
+                    Text("1m").tag(60)
+                    Text("2m").tag(120)
+                    Text("5m").tag(300)
                 }
-                HoldCountdown(model: model)   // always present; hides via opacity
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .onChange(of: model.holdSeconds) { _, _ in
+                    if model.manual { model.applyKnob() }
+                }
             }
             .disabled(!model.canWrite || !model.manual)
             .opacity(model.manual ? 1 : 0.4)
@@ -233,21 +233,22 @@ private struct ControlSection: View {
     }
 }
 
-/// Isolated child view: `holdRemaining` ticks every second while a hold is
-/// armed, and this boundary keeps those updates from rebuilding the pickers
-/// (a rebuild mid-click cancels AppKit's control tracking). Always occupies
-/// its line (hidden via opacity) so arming a hold never resizes the popover.
-private struct HoldCountdown: View {
+/// The Hold row's leading label: "Hold" normally, or the ticking countdown
+/// while a hold is armed. Isolated child view on purpose — `holdRemaining`
+/// ticks every second, and this boundary keeps those updates from rebuilding
+/// the pickers (a rebuild mid-click cancels AppKit's control tracking).
+private struct HoldLabel: View {
     var model: FanModel
 
     var body: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "timer").font(.caption2)
-            Text("reverts to auto in \(model.countdown)")
+        if model.holdDeadline != nil {
+            Text(model.countdown)
+                .font(.subheadline.monospacedDigit().weight(.medium))
+                .foregroundStyle(activeAccent)
+                .help("Reverts to automatic control when the countdown ends")
+        } else {
+            Text("Hold").font(.subheadline).foregroundStyle(.secondary)
         }
-        .font(.caption).foregroundStyle(.secondary)
-        .padding(.top, 4)
-        .opacity(model.holdDeadline != nil ? 1 : 0)
     }
 }
 
