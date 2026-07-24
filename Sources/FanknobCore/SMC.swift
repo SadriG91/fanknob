@@ -1,4 +1,4 @@
-// SMC.swift — shared SMC engine for the fanknob client and daemon.
+// SMC.swift — SMC engine (part of FanknobCore).
 //
 // Talks to the Apple System Management Controller over IOKit: reads fan RPM and
 // temperature sensors, and (when run as root) writes fan target/mode keys.
@@ -6,8 +6,8 @@
 import Foundation
 import IOKit
 
-// Where the root daemon listens and the client connects.
-let fanknobdSocketPath = "/var/run/fanknobd.sock"
+// Where the root daemon listens and clients connect.
+public let fanknobdSocketPath = "/var/run/fanknobd.sock"
 
 // MARK: - SMC parameter struct (must match the kernel's SMCKeyData_t, 80 bytes)
 
@@ -75,13 +75,13 @@ let kernelIndexSMC: UInt32 = 2
 
 // MARK: - FourCC helpers
 
-func fourCC(_ s: String) -> UInt32 {
+public func fourCC(_ s: String) -> UInt32 {
     var r: UInt32 = 0
     for b in s.utf8.prefix(4) { r = (r << 8) | UInt32(b) }
     return r
 }
 
-func fourCCString(_ v: UInt32) -> String {
+public func fourCCString(_ v: UInt32) -> String {
     let chars = [UInt8((v >> 24) & 0xff), UInt8((v >> 16) & 0xff),
                  UInt8((v >> 8) & 0xff), UInt8(v & 0xff)]
     return String(bytes: chars, encoding: .ascii) ?? "?"
@@ -104,10 +104,10 @@ func arrayToTuple(_ a: [UInt8]) -> SMCBytes {
 
 // MARK: - SMC connection
 
-enum SMCError: Error, CustomStringConvertible {
+public enum SMCError: Error, CustomStringConvertible {
     case open(String)
     case call(String)
-    var description: String {
+    public var description: String {
         switch self {
         case .open(let m): return "Could not open SMC: \(m)"
         case .call(let m): return "SMC call failed: \(m)"
@@ -115,10 +115,12 @@ enum SMCError: Error, CustomStringConvertible {
     }
 }
 
-final class SMC {
+public final class SMC {
     private var conn: io_connect_t = 0
 
-    func open() throws {
+    public init() {}
+
+    public func open() throws {
         let service = IOServiceGetMatchingService(kIOMainPortDefault,
                                                   IOServiceMatching("AppleSMC"))
         guard service != 0 else { throw SMCError.open("AppleSMC service not found") }
@@ -127,7 +129,7 @@ final class SMC {
         guard rc == kIOReturnSuccess else { throw SMCError.open("IOServiceOpen -> \(rc)") }
     }
 
-    func close() { if conn != 0 { IOServiceClose(conn); conn = 0 } }
+    public func close() { if conn != 0 { IOServiceClose(conn); conn = 0 } }
 
     private func call(_ input: inout SMCParamStruct) throws -> SMCParamStruct {
         var output = SMCParamStruct()
@@ -145,9 +147,9 @@ final class SMC {
         return output
     }
 
-    struct KeyInfo { let dataSize: UInt32; let dataType: UInt32 }
+    public struct KeyInfo { public let dataSize: UInt32; public let dataType: UInt32 }
 
-    func keyInfo(_ key: UInt32) throws -> KeyInfo {
+    public func keyInfo(_ key: UInt32) throws -> KeyInfo {
         var input = SMCParamStruct()
         input.key = key
         input.data8 = SMCSelector.getKeyInfo.rawValue
@@ -155,7 +157,7 @@ final class SMC {
         return KeyInfo(dataSize: out.keyInfo.dataSize, dataType: out.keyInfo.dataType)
     }
 
-    func read(_ key: UInt32) -> (type: UInt32, bytes: [UInt8])? {
+    public func read(_ key: UInt32) -> (type: UInt32, bytes: [UInt8])? {
         guard let info = try? keyInfo(key), info.dataSize > 0 else { return nil }
         var input = SMCParamStruct()
         input.key = key
@@ -165,7 +167,7 @@ final class SMC {
         return (info.dataType, tupleToArray(out.bytes, count: Int(info.dataSize)))
     }
 
-    func write(_ key: UInt32, type: UInt32, bytes: [UInt8]) throws {
+    public func write(_ key: UInt32, type: UInt32, bytes: [UInt8]) throws {
         var input = SMCParamStruct()
         input.key = key
         input.keyInfo.dataSize = UInt32(bytes.count)
@@ -175,12 +177,12 @@ final class SMC {
         _ = try call(&input)
     }
 
-    func keyCount() -> UInt32 {
+    public func keyCount() -> UInt32 {
         guard let (t, b) = read(fourCC("#KEY")) else { return 0 }
         return decodeToDouble(type: t, bytes: b).map { UInt32($0) } ?? 0
     }
 
-    func keyAtIndex(_ i: UInt32) -> UInt32? {
+    public func keyAtIndex(_ i: UInt32) -> UInt32? {
         var input = SMCParamStruct()
         input.data8 = SMCSelector.getKeyFromIndex.rawValue
         input.data32 = i
@@ -192,7 +194,7 @@ final class SMC {
 // MARK: - Value decoding / encoding
 // SMC integers and fpe2 are big-endian; flt is native little-endian on arm64.
 
-func decodeToDouble(type: UInt32, bytes: [UInt8]) -> Double? {
+public func decodeToDouble(type: UInt32, bytes: [UInt8]) -> Double? {
     let t = fourCCString(type).trimmingCharacters(in: .whitespaces)
     switch t {
     case "flt":
@@ -218,7 +220,7 @@ func decodeToDouble(type: UInt32, bytes: [UInt8]) -> Double? {
     }
 }
 
-func encodeRPM(type: UInt32, value: Double) -> [UInt8] {
+public func encodeRPM(type: UInt32, value: Double) -> [UInt8] {
     let t = fourCCString(type).trimmingCharacters(in: .whitespaces)
     switch t {
     case "fpe2":
@@ -230,32 +232,32 @@ func encodeRPM(type: UInt32, value: Double) -> [UInt8] {
     }
 }
 
-extension Double {
+public extension Double {
     func clamped(_ lo: Double, _ hi: Double) -> Double { Swift.min(Swift.max(self, lo), hi) }
 }
 
 // MARK: - Fans
 
-struct Fan {
-    let index: Int
-    let actual: Double
-    let min: Double
-    let max: Double
-    let target: Double
-    let managed: Bool   // true = manual/forced
+public struct Fan {
+    public let index: Int
+    public let actual: Double
+    public let min: Double
+    public let max: Double
+    public let target: Double
+    public let managed: Bool   // true = manual/forced
 
-    var knob: Double {
+    public var knob: Double {
         guard max > min else { return 0 }
         return ((target - min) / (max - min) * 100).clamped(0, 100)
     }
 }
 
-func fanCount(_ smc: SMC) -> Int {
+public func fanCount(_ smc: SMC) -> Int {
     guard let (t, b) = smc.read(fourCC("FNum")) else { return 0 }
     return decodeToDouble(type: t, bytes: b).map { Int($0) } ?? 0
 }
 
-func readFan(_ smc: SMC, _ i: Int) -> Fan? {
+public func readFan(_ smc: SMC, _ i: Int) -> Fan? {
     func num(_ suffix: String) -> Double? {
         guard let (t, b) = smc.read(fourCC("F\(i)\(suffix)")) else { return nil }
         return decodeToDouble(type: t, bytes: b)
@@ -266,9 +268,8 @@ func readFan(_ smc: SMC, _ i: Int) -> Fan? {
 }
 
 // Privileged: take manual control of fan i and target a knob percentage.
-// Returns the resolved RPM. Throws (needs root) on write failure.
 @discardableResult
-func setFanKnob(_ smc: SMC, _ i: Int, pct: Double) throws -> Double {
+public func setFanKnob(_ smc: SMC, _ i: Int, pct: Double) throws -> Double {
     guard let f = readFan(smc, i) else { throw SMCError.call("fan \(i) unreadable") }
     let rpm = f.min + (f.max - f.min) * pct.clamped(0, 100) / 100
     try smc.write(fourCC("F\(i)Md"), type: fourCC("ui8 "), bytes: [1])
@@ -280,17 +281,20 @@ func setFanKnob(_ smc: SMC, _ i: Int, pct: Double) throws -> Double {
 }
 
 // Privileged: return fan i to automatic control.
-func setFanAuto(_ smc: SMC, _ i: Int) throws {
+public func setFanAuto(_ smc: SMC, _ i: Int) throws {
     try smc.write(fourCC("F\(i)Md"), type: fourCC("ui8 "), bytes: [0])
 }
 
 // MARK: - Temperature
 
-struct TempSensor { let key: String; let celsius: Double }
+public struct TempSensor {
+    public let key: String
+    public let celsius: Double
+}
 
 // Apple Silicon exposes many die/board temp sensors as 'T…' keys of type flt.
 // There is no single documented "CPU temp" key, so we scan all plausible ones.
-func readTemps(_ smc: SMC) -> [TempSensor] {
+public func readTemps(_ smc: SMC) -> [TempSensor] {
     let count = smc.keyCount()
     guard count > 0 else { return [] }
     var out: [TempSensor] = []
@@ -301,37 +305,33 @@ func readTemps(_ smc: SMC) -> [TempSensor] {
         guard let (t, b) = smc.read(key),
               fourCCString(t).trimmingCharacters(in: .whitespaces) == "flt",
               let v = decodeToDouble(type: t, bytes: b),
-              v > 1, v < 130 else { continue }   // filter unpopulated / bogus sensors
+              v > 1, v < 130 else { continue }
         out.append(TempSensor(key: name, celsius: v))
     }
     return out.sorted { $0.celsius > $1.celsius }
 }
 
-// A single representative reading: average across CPU-core (Tp*) and GPU (Tg*)
-// sensor clusters. Individual sensors spike momentarily, so a cluster average
-// is the meaningful number. Falls back to the overall average if a machine
-// doesn't use the Tp/Tg naming.
-struct TempReport {
-    let all: [TempSensor]
-    let cpu: Double?
-    let gpu: Double?
-    var overall: Double? {
+// Average across CPU-core (Tp*) and GPU (Tg*) clusters. Individual sensors spike
+// momentarily, so a cluster average is the meaningful number.
+public struct TempReport {
+    public let all: [TempSensor]
+    public let cpu: Double?
+    public let gpu: Double?
+    public var overall: Double? {
         all.isEmpty ? nil : all.reduce(0) { $0 + $1.celsius } / Double(all.count)
+    }
+    public init(all: [TempSensor], cpu: Double?, gpu: Double?) {
+        self.all = all; self.cpu = cpu; self.gpu = gpu
     }
 }
 
-func readTempReport(_ smc: SMC) -> TempReport {
-    let all = readTemps(smc)
-    func avg(_ prefix: String) -> Double? {
-        let xs = all.filter { $0.key.hasPrefix(prefix) }
-        return xs.isEmpty ? nil : xs.reduce(0) { $0 + $1.celsius } / Double(xs.count)
-    }
-    return TempReport(all: all, cpu: avg("Tp"), gpu: avg("Tg"))
+public func readTempReport(_ smc: SMC) -> TempReport {
+    tempReport(from: readTemps(smc))
 }
 
 // For a live view: enumerate the temp keys ONCE, then re-read just those each
 // frame (avoids re-scanning all ~1500 SMC keys on every refresh).
-func discoverTempKeys(_ smc: SMC) -> [UInt32] {
+public func discoverTempKeys(_ smc: SMC) -> [UInt32] {
     let count = smc.keyCount()
     var keys: [UInt32] = []
     for i in 0..<count {
@@ -345,7 +345,7 @@ func discoverTempKeys(_ smc: SMC) -> [UInt32] {
     return keys
 }
 
-func readTempsCached(_ smc: SMC, _ keys: [UInt32]) -> [TempSensor] {
+public func readTempsCached(_ smc: SMC, _ keys: [UInt32]) -> [TempSensor] {
     var out: [TempSensor] = []
     for k in keys {
         guard let (t, b) = smc.read(k),
@@ -355,7 +355,7 @@ func readTempsCached(_ smc: SMC, _ keys: [UInt32]) -> [TempSensor] {
     return out.sorted { $0.celsius > $1.celsius }
 }
 
-func tempReport(from sensors: [TempSensor]) -> TempReport {
+public func tempReport(from sensors: [TempSensor]) -> TempReport {
     func avg(_ prefix: String) -> Double? {
         let xs = sensors.filter { $0.key.hasPrefix(prefix) }
         return xs.isEmpty ? nil : xs.reduce(0) { $0 + $1.celsius } / Double(xs.count)

@@ -1,137 +1,108 @@
-# fanknob — knob-style fan control for Apple Silicon Macs
+# fanknob — fan control for Apple Silicon Macs
 
-A small CLI that controls your Mac's fans through a **0–100 knob** instead of raw
-RPM, and reports temperatures. It talks to the SMC (System Management Controller)
-directly over IOKit — the same mechanism apps like Macs Fan Control use.
+Control your Mac's fans with a **0–100 knob** (mapped onto each fan's own
+min→max RPM range) and monitor CPU/GPU temperatures. Three faces on one engine:
 
-`0` = each fan's reported minimum, `100` = its maximum. The knob maps onto each
-fan's own min→max range, so you never type an RPM.
+- **`fanknob`** — CLI (`status`, `temp`, `set`, `auto`, …)
+- **`fanknob tui`** — live interactive terminal dashboard
+- **Fanknob.app** — a native SwiftUI **menu-bar app**
 
-Tested on a MacBook Pro 14" (M2 Pro, macOS 26).
+It talks to the SMC directly over IOKit — the same mechanism apps like Macs Fan
+Control use. Tested on a MacBook Pro 14" (M2 Pro, macOS 26).
 
 ## Layout
 
-| File                       | What it is                                        |
-|----------------------------|---------------------------------------------------|
-| `SMC.swift`                | Shared SMC engine: read/write keys, fans, temps   |
-| `fanknob.swift`            | Client CLI (reads directly; sends writes to daemon)|
-| `fanknobd.swift`           | Root daemon that performs the privileged writes   |
-| `com.fanknob.daemon.plist` | LaunchDaemon that runs the daemon at boot         |
-| `Makefile`                 | build / install / uninstall                       |
-
-## Build
-
-```sh
-make            # builds ./fanknob and ./fanknobd
+```
+Package.swift
+Sources/
+  FanknobCore/   shared engine: SMC access, fan/temp model, daemon client
+  fanknob/       CLI + TUI
+  fanknobd/      root daemon (privileged writes)
+  FanknobApp/    SwiftUI menu-bar app
+app/Info.plist   app bundle metadata
+com.fanknob.daemon.plist
 ```
 
-## Run from anywhere, without sudo
+## Build & install
 
 ```sh
-sudo make install
+make                 # build everything (release)
+make app             # assemble build/Fanknob.app
+make run-app         # build + launch the menu-bar app
+sudo make install    # install CLI + daemon + app to the system, load the daemon
+sudo make uninstall
 ```
 
-This installs both binaries to `/usr/local/bin` (on your `PATH`) and loads the
-daemon via `launchctl`. After that, from any directory:
+> If you hit an Xcode license error building the app:
+> `sudo xcodebuild -license accept`
+
+The one-time `sudo` on install is unavoidable: granting future passwordless root
+access requires proving you're root once. After that the root daemon performs
+the writes, and the CLI/app stay unprivileged — no `sudo` per command.
+
+## The menu-bar app
+
+`make run-app` (or `open -a Fanknob` after install) puts a fan icon + live CPU
+temperature in your menu bar. Click it for:
+
+- CPU / GPU temperature gauges (green→red) and per-fan RPM gauges
+- a **Knob** slider (0–100%) that applies live via the daemon
+- an **Auto** button and a **Hold** picker (Off / 30s / 1m / 2m / 5m) with a
+  live countdown — the fans revert to automatic on their own
+- a status line showing whether the helper daemon is connected
+
+It runs as a menu-bar agent (no Dock icon). Writes go through the daemon, so the
+app never needs elevated privileges.
+
+## CLI
 
 ```sh
-fanknob status          # fans + CPU/GPU temperature   (no sudo)
-fanknob tui             # live interactive dashboard    (no sudo to view)
-fanknob temp            # every temperature sensor      (no sudo)
-fanknob set 40          # all fans to 40% of range      (no sudo — via daemon)
-fanknob set 60 --for 120  # hold 60% for 120s, then auto-revert (safety)
-fanknob auto            # back to automatic control      (no sudo — via daemon)
-fanknob keys [prefix]   # dump SMC keys (default 'F')
+fanknob status              # fans + CPU/GPU temperature   (no sudo)
+fanknob tui                 # live interactive dashboard
+fanknob temp                # every temperature sensor
+fanknob set 40              # all fans to 40% of range      (no sudo — via daemon)
+fanknob set 60 --for 120    # hold 60% for 120s, then auto-revert
+fanknob auto                # back to automatic control
+fanknob keys [prefix]       # dump SMC keys (default 'F')
 ```
 
-### Live TUI
+Reads need no privileges. `set`/`auto` go through the root daemon if installed,
+otherwise run them with `sudo`.
 
-`fanknob tui` opens a full-screen dashboard with live fan and temperature gauges
-and a **knob you turn with the keyboard**:
+## TUI
+
+`fanknob tui` opens a full-screen dashboard with live gauges and a keyboard knob:
 
 ```
  fanknob   Apple M2 Pro
  ──────────────────────────────────────────────
  Fan 0  3301 rpm  █████▎░░░░░░░░░░░░░░░░░░  auto
- Fan 1  3556 rpm  ██████▋░░░░░░░░░░░░░░░░░  auto
- ──────────────────────────────────────────────
  CPU   81°C  ███████████████████▍░░░░
- GPU   70°C  ████████████████▋░░░░░░░
- ──────────────────────────────────────────────
  KNOB  22%  █████▎░░░░░░░░░░░░░░░░░░  MANUAL
+ HOLD  1:45 → auto
  ──────────────────────────────────────────────
- ←/→ ±5   ↑/↓ ±1   1-9 preset   a auto   q quit
+ ←/→ ±5  ↑/↓ ±1  1-9 preset  t hold  a auto  q quit
 ```
 
-| Key       | Action                          |
-|-----------|---------------------------------|
-| `←` / `→` | knob −/+ 5%                     |
-| `↑` / `↓` | knob −/+ 1%                     |
-| `1`–`9`   | jump to 10%–90% (`0` = 0%)      |
-| `a`       | return to automatic control     |
-| `q`       | quit                            |
-
-Turning the knob applies live through the daemon. Without the daemon (and not
-root) the TUI runs read-only — it shows gauges but the knob is disabled until
-`sudo make install`.
-
-### Safety auto-revert
-
-`fanknob set 60 --for 120` holds 60% for 120 seconds, then returns the fans to
-automatic control. The timer lives in the **root daemon**, not the client, so the
-revert still fires even if you close the terminal or the client exits — you can't
-accidentally leave the fans pinned. Any later `set`/`auto` cancels a pending
-revert. (Without the daemon, i.e. `sudo fanknob set 60 --for 120`, the client
-holds the duration in the foreground and reverts on exit — so keep it running.)
-
-The one-time `sudo` on install is unavoidable — granting future passwordless
-root access requires proving you're root once. After that the daemon (running as
-root) does the writes; the `fanknob` client stays unprivileged and just sends it
-`set`/`auto` over a Unix socket.
-
-### Without installing
-
-Reads work with no privileges. For writes without the daemon, use sudo:
-
-```sh
-./fanknob status
-sudo ./fanknob set 40
-sudo ./fanknob auto
-```
-
-## Uninstall
-
-```sh
-sudo make uninstall
-```
+`←/→` ±5, `↑/↓` ±1, `1`–`9` presets, `t` cycles the hold, `a` auto, `q` quit.
 
 ## Important
 
-- **Run `fanknob auto` when you're done.** In manual mode the firmware is *not*
-  managing fans for thermal safety — you are. Don't leave them pinned low under
-  load.
+- **Return to auto when done** (`fanknob auto`, the app's Auto button, or let a
+  hold expire). In manual mode you own thermal safety, not the firmware — don't
+  leave fans pinned low under load.
 - MacBook Air is fanless; nothing to control there.
 
 ## How it works
 
-Per fan `i`, the SMC exposes:
-
-| Key    | Type | Meaning                     |
-|--------|------|-----------------------------|
-| `FNum` | ui8  | number of fans              |
-| `FiAc` | flt  | actual RPM                  |
-| `FiMn` | flt  | minimum RPM                 |
-| `FiMx` | flt  | maximum RPM                 |
-| `FiTg` | flt  | target RPM (write to set)   |
-| `FiMd` | ui8  | mode: 0 = auto, 1 = manual  |
-
-Force a speed: write `1` to `FiMd`, then the target RPM (little-endian `Float32`)
-to `FiTg`. Release: write `0` to `FiMd`.
+Per fan `i`, the SMC exposes `FNum` (count), `FiAc` (actual RPM), `FiMn`/`FiMx`
+(min/max), `FiTg` (target RPM, `flt`), `FiMd` (mode: 0 = auto, 1 = manual). To
+force a speed: write `1` to `FiMd`, then the target RPM to `FiTg`. To release:
+write `0` to `FiMd`.
 
 **Temperature:** Apple Silicon has no single documented "CPU temp" key. fanknob
-scans all `T…` sensors of type `flt` in a plausible range (~1–130 °C) and reports
-the average of the CPU-core (`Tp*`) and GPU (`Tg*`) clusters. Individual sensors
-spike momentarily, so the cluster average is the meaningful number.
+scans all `T…` sensors of type `flt` in a plausible range and reports the average
+of the CPU-core (`Tp*`) and GPU (`Tg*`) clusters.
 
 ### The 80-byte struct gotcha
 
@@ -139,7 +110,7 @@ The kernel's `SMCKeyData_t` is exactly 80 bytes. Swift reuses a nested struct's
 trailing padding for the next field (C does not), which silently packs the param
 struct to 76 bytes and makes every `IOConnectCallStructMethod` fail with
 `kIOReturnBadArgument`. `SMCKeyInfoData` is padded to a full 12 bytes to prevent
-this — see the comment in `SMC.swift`.
+this — see the comment in `Sources/FanknobCore/SMC.swift`.
 
 ### Daemon security
 

@@ -1,9 +1,8 @@
-# Compiled binaries
-/fanknob
-/fanknobd
+# SwiftPM build output
+/.build/
+/build/
 
 # Swift/macOS cruft
 .DS_Store
 *.dSYM/
-*.o
-*.swiftmodule
+Package.resolved

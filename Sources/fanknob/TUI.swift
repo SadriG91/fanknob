@@ -7,6 +7,7 @@
 
 import Foundation
 import Darwin
+import FanknobCore
 
 // MARK: - ANSI helpers
 
@@ -81,23 +82,7 @@ func waitKey(timeoutMs: Int) -> [UInt8] {
     return n > 0 ? Array(buf[0..<n]) : []
 }
 
-// MARK: - Daemon reachability / applying writes
-
-func daemonReachable() -> Bool {
-    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-    guard fd >= 0 else { return false }
-    defer { Darwin.close(fd) }
-    var addr = sockaddr_un()
-    addr.sun_family = sa_family_t(AF_UNIX)
-    let pb = fanknobdSocketPath.utf8CString
-    withUnsafeMutableBytes(of: &addr.sun_path) { raw in
-        for (i, b) in pb.enumerated() where i < raw.count { raw[i] = UInt8(bitPattern: b) }
-    }
-    let len = socklen_t(MemoryLayout<sockaddr_un>.size)
-    return withUnsafePointer(to: &addr) {
-        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, len) == 0 }
-    }
-}
+// MARK: - Applying writes
 
 func applyKnob(_ smc: SMC, _ pct: Double, seconds: Int = 0) {
     if geteuid() == 0 { for i in 0..<fanCount(smc) { _ = try? setFanKnob(smc, i, pct: pct) } }
@@ -122,7 +107,6 @@ func sysctlString(_ name: String) -> String? {
 
 // MARK: - Rendering
 
-// Human labels for the cycle of hold durations.
 let holdCycle = [0, 30, 60, 120, 300]
 func holdLabel(_ s: Int) -> String {
     switch s { case 0: return "off"; case 30: return "30s"; case 60: return "1m"
@@ -204,7 +188,6 @@ func runTUI(_ smc: SMC) {
     let chip = sysctlString("machdep.cpu.brand_string") ?? "Apple Silicon"
     let tempKeys = discoverTempKeys(smc)
 
-    // Seed the knob from the current fan target.
     var knob = (0..<fanCount(smc)).compactMap { readFan(smc, $0) }.first?.knob ?? 0
     var holdSeconds = 0
     var holdDeadline: Date? = nil
@@ -215,7 +198,6 @@ func runTUI(_ smc: SMC) {
     print(Ansi.altOn + Ansi.hide, terminator: "")
     defer { restoreTerminal() }
 
-    // Apply the current knob (with the selected hold) and (re)arm the countdown.
     func arm() {
         guard canWrite else { return }
         applyKnob(smc, knob, seconds: holdSeconds)
@@ -224,9 +206,6 @@ func runTUI(_ smc: SMC) {
 
     var running = true
     while running {
-        // Fire the revert when a hold expires. The daemon also reverts on its
-        // own timer (so it happens even if the TUI has quit); calling auto here
-        // is idempotent and keeps the countdown honest while the TUI is alive.
         if let d = holdDeadline, Date() >= d {
             if canWrite { applyAutoTUI(smc) }
             holdDeadline = nil
@@ -238,9 +217,8 @@ func runTUI(_ smc: SMC) {
         fflush(stdout)
 
         let keys = waitKey(timeoutMs: 700)
-        if keys.isEmpty { continue }   // timeout → just refresh
+        if keys.isEmpty { continue }
 
-        // Arrow keys arrive as ESC [ A/B/C/D.
         if keys.count >= 3, keys[0] == 0x1B, keys[1] == 0x5B {
             switch keys[2] {
             case 0x41: knob = min(100, knob + 1); arm()   // up

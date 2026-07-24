@@ -1,17 +1,17 @@
-// fanknobd.swift — privileged fan-control daemon.
+// Main.swift — privileged fan-control daemon (fanknobd).
 //
 // Runs as root under launchd. Listens on a Unix socket and accepts ONLY these
 // commands — "set <0-100> [seconds]" and "auto" — so even though any local user
 // can connect, the daemon can't be made to do anything but move the fans.
 //
-// Safety auto-revert: "set 60 120" holds 60% for 120 seconds, then the DAEMON
-// (not the client) returns the fans to automatic control. Because the timer
-// lives here, the revert still happens if the client exits or the terminal is
-// closed — you can't accidentally leave the fans pinned.
+// Safety auto-revert: "set 60 120" holds 60% for 120 seconds, then the daemon
+// returns the fans to automatic control. Because the timer lives here, the
+// revert still happens if the client exits or the terminal is closed.
 
 import Foundation
 import Darwin
 import Dispatch
+import FanknobCore
 
 func log(_ s: String) {
     FileHandle.standardError.write("fanknobd: \(s)\n".data(using: .utf8)!)
@@ -42,7 +42,6 @@ func handleLocked(_ line: String, _ smc: SMC) -> String {
         let pct = v.clamped(0, 100)
         let seconds = parts.count >= 3 ? max(0, Int(parts[2]) ?? 0) : 0
 
-        // A new command supersedes any scheduled revert.
         pendingRevert?.cancel(); pendingRevert = nil
 
         let n = fanCount(smc)
@@ -98,7 +97,6 @@ struct Fanknobd {
         }
         guard bound == 0 else { log("bind() failed: \(String(cString: strerror(errno)))"); exit(1) }
 
-        // Any local user may send fan commands (they're harmless and validated).
         chmod(fanknobdSocketPath, 0o666)
 
         guard listen(listenFD, 8) == 0 else { log("listen() failed"); exit(1) }
