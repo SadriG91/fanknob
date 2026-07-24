@@ -25,6 +25,10 @@ let package = Package(
             name: "FanknobApp",
             dependencies: ["FanknobCore"]
         ),
+        .testTarget(
+            name: "FanknobCoreTests",
+            dependencies: ["FanknobCore"]
+        ),
     ],
     // Keep Swift 5 semantics: the daemon/app manage threading manually and
     // don't need Swift 6 strict-concurrency enforcement.

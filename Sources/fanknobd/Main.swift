@@ -28,20 +28,20 @@ func applyAuto(_ smc: SMC) {
 
 // Must run on smcQueue. Returns the text reply for the client.
 func handleLocked(_ line: String, _ smc: SMC) -> String {
-    let parts = line.split(separator: " ").map(String.init)
-    guard let verb = parts.first else { return "empty command" }
+    switch parseDaemonCommand(line) {
+    case .failure(.empty):
+        return "empty command"
+    case .failure(.badSet):
+        return "usage: set <0-100> [seconds]"
+    case .failure(.unknown(let verb)):
+        return "unknown command: \(verb)"
 
-    switch verb {
-    case "auto":
+    case .success(.auto):
         pendingRevert?.cancel(); pendingRevert = nil
         applyAuto(smc)
         return "auto: returned to automatic control"
 
-    case "set":
-        guard parts.count >= 2, let v = Double(parts[1]) else { return "usage: set <0-100> [seconds]" }
-        let pct = v.clamped(0, 100)
-        let seconds = parts.count >= 3 ? max(0, Int(parts[2]) ?? 0) : 0
-
+    case .success(.set(let pct, let seconds)):
         pendingRevert?.cancel(); pendingRevert = nil
 
         let n = fanCount(smc)
@@ -64,9 +64,6 @@ func handleLocked(_ line: String, _ smc: SMC) -> String {
             lines.append("holding \(Int(pct))% for \(seconds)s, then auto-revert")
         }
         return lines.joined(separator: "\n")
-
-    default:
-        return "unknown command: \(verb)"
     }
 }
 

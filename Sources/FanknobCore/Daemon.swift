@@ -12,6 +12,41 @@ public enum DaemonResult {
     case failed(String)
 }
 
+// MARK: - Protocol
+
+/// A validated daemon command. The daemon accepts nothing else, which is what
+/// keeps the root socket safe to expose to all local users.
+public enum DaemonCommand: Equatable {
+    case auto
+    case set(pct: Double, holdSeconds: Int)
+}
+
+public enum DaemonCommandError: Error, Equatable {
+    case empty
+    case badSet
+    case unknown(String)
+}
+
+/// Parse one protocol line ("auto" | "set <0-100> [seconds]"). Pure function —
+/// clamping and validation happen here so they're unit-testable.
+public func parseDaemonCommand(_ line: String) -> Result<DaemonCommand, DaemonCommandError> {
+    let parts = line.split(separator: " ").map(String.init)
+    guard let verb = parts.first else { return .failure(.empty) }
+    switch verb {
+    case "auto":
+        return .success(.auto)
+    case "set":
+        guard parts.count >= 2, let v = Double(parts[1]), v.isFinite else {
+            return .failure(.badSet)
+        }
+        let pct = v.clamped(0, 100)
+        let seconds = parts.count >= 3 ? max(0, Int(parts[2]) ?? 0) : 0
+        return .success(.set(pct: pct, holdSeconds: seconds))
+    default:
+        return .failure(.unknown(verb))
+    }
+}
+
 public func sendToDaemon(_ command: String) -> DaemonResult {
     let fd = socket(AF_UNIX, SOCK_STREAM, 0)
     guard fd >= 0 else { return .failed("socket() failed") }

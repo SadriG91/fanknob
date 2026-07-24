@@ -86,6 +86,18 @@ otherwise run them with `sudo`.
 
 `←/→` ±5, `↑/↓` ±1, `1`–`9` presets, `t` cycles the hold, `a` auto, `q` quit.
 
+## Testing
+
+```sh
+make test      # unit tests: SMC codecs, knob math, temp clustering, daemon protocol
+make ui-test   # UI acceptance: real synthetic clicks on the app's Auto/Manual toggle
+```
+
+`ui-test` is a regression test for the "sticky toggle" bug (the SMC reports the
+old fan mode for tens of ms after a write; the app must not let a stale poll
+yank the toggle back). It drives real CGEvent clicks, so it needs the app
+running, the daemon installed, and Accessibility permission for the terminal.
+
 ## Important
 
 - **Return to auto when done** (`fanknob auto`, the app's Auto button, or let a

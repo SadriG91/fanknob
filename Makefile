@@ -16,10 +16,20 @@ PLIST = com.fanknob.daemon.plist
 APPDIR = /Applications
 APP = Fanknob.app
 
-.PHONY: all app run-app clean install uninstall
+.PHONY: all app run-app test ui-test clean install uninstall
 
 all:
 	$(SWIFT_BUILD)
+
+# Unit tests (pure logic: codecs, knob math, temp clustering, daemon protocol).
+test:
+	swift test
+
+# UI acceptance test for the menu-bar app's toggle (real synthetic clicks).
+# Needs: app running, daemon installed, terminal with Accessibility permission.
+ui-test:
+	swiftc -O scripts/click.swift -o /tmp/fanknob-click
+	python3 scripts/toggle-acceptance.py
 
 # Assemble a double-clickable menu-bar .app around the built binary.
 app: all
