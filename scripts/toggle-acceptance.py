@@ -49,7 +49,16 @@ def segment_center(button: int) -> tuple[int, int]:
     return px + sw // 2, py + sh // 2
 
 
+def ensure_open() -> None:
+    """The popover dismisses itself if it loses key status; reopen it rather
+    than recording an empty sample (which used to make this test flaky)."""
+    if app("count of windows") == "0":
+        app("click menu bar item 1 of menu bar 2")
+        time.sleep(1.2)
+
+
 def manual_selected() -> str:
+    ensure_open()
     return app("get value of radio button 2 of radio group 1 of group 1 of window 1")
 
 
@@ -58,7 +67,12 @@ def trial(target: tuple[int, int], expect: str, name: str) -> bool:
     t0 = time.time()
     samples = []
     while time.time() - t0 < WATCH_SECONDS:
-        samples.append((round(time.time() - t0, 2), manual_selected()))
+        value = manual_selected()
+        if value:                      # ignore reads taken while reopening
+            samples.append((round(time.time() - t0, 2), value))
+    if not samples:
+        print(f"  {name}: no readable samples -> FAIL")
+        return False
     transitions = [
         (t, v) for i, (t, v) in enumerate(samples) if i == 0 or v != samples[i - 1][1]
     ]

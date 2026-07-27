@@ -38,7 +38,7 @@ let rowLabelWidth: CGFloat = 42
 /// The row labels are all capitals or digits, so their optical centre sits
 /// above the line box's geometric centre by about half a descender. Nudge the
 /// chevron up to match, or it reads as sitting low.
-let disclosureBaselineNudge: CGFloat = -1
+let disclosureBaselineNudge: CGFloat = -0.5
 
 /// A smooth, animated gauge bar (value is 0…1).
 struct GaugeBar: View {
@@ -350,11 +350,12 @@ private struct FansSection: View {
             ForEach(model.fans, id: \.index) { f in
                 let badge = model.badge(for: f)
                 HStack(spacing: 10) {
-                    // Empty gutter matching the temperature rows' chevron, so
-                    // every label in the panel starts on the same x.
-                    Color.clear.frame(width: disclosureGutter + disclosureGap, height: 1)
+                    // Flush left — no chevron here, so the label gets the
+                    // gutter's width too. Same total, so the gauges beside the
+                    // temperature rows and the fan rows still share a column.
                     Text("Fan \(f.index)").font(.callout).foregroundStyle(.secondary)
-                        .frame(width: rowLabelWidth, alignment: .leading)
+                        .frame(width: rowLabelWidth + disclosureGutter + disclosureGap,
+                               alignment: .leading)
                     GaugeBar(value: f.max > f.min ? (f.actual - f.min) / (f.max - f.min) : 0,
                              tint: badge.overridden ? activeAccent : .secondary)
                     Text("\(Int(f.actual.rounded()))")
