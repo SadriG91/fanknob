@@ -76,6 +76,10 @@ final class FanModel {
     var fans: [Fan] = []
     var cpu: Double?
     var gpu: Double?
+    /// Every temperature sensor, hottest first. Only refreshed by full polls
+    /// (a light poll reads the CPU cluster alone), which is exactly when the
+    /// popover is open and the expanded lists are visible.
+    var sensors: [TempSensor] = []
     var canWrite = false
     /// False until the first hardware snapshot lands (sensor discovery ~0.4 s).
     var ready = false
@@ -168,6 +172,11 @@ final class FanModel {
         return "—"
     }
 
+    /// Sensors belonging to one cluster ("Tp" = CPU cores, "Tg" = GPU).
+    func clusterSensors(prefix: String) -> [TempSensor] {
+        sensors.filter { $0.key.hasPrefix(prefix) }
+    }
+
     /// The user is overriding the firmware (manual or curve).
     var overriding: Bool { mode != .auto }
 
@@ -232,18 +241,20 @@ final class FanModel {
             let state = self.controller.daemonState()
             DispatchQueue.main.async {
                 self.pollInFlight = false
-                self.publish(snap: snap, writable: writable, state: state)
+                self.publish(snap: snap, writable: writable, state: state, scope: scope)
                 if self.pollAgain { self.pollAgain = false; self.pollOnce(.full) }
             }
         }
     }
 
-    private func publish(snap: Snapshot, writable: Bool, state: DaemonState?) {
+    private func publish(snap: Snapshot, writable: Bool, state: DaemonState?,
+                         scope: SnapshotScope = .full) {
         // Assign only when values change: @Observable notifies on every set,
         // and spurious sets re-render the control views each poll.
         if fans != snap.fans { fans = snap.fans }
         if cpu != snap.temps.cpu { cpu = snap.temps.cpu }
         if let g = snap.temps.gpu, gpu != g { gpu = g }   // light polls omit GPU
+        if scope == .full { sensors = snap.temps.all }
         if canWrite != writable { canWrite = writable }
         if daemonPresent != (state != nil) { daemonPresent = state != nil }
 

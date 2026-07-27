@@ -141,7 +141,10 @@ slider per fan.
 `make run-app` (or `open -a Fanknob` after install) puts a fan icon + live CPU
 temperature in your menu bar. Click it for:
 
-- CPU / GPU temperature gauges and per-fan RPM gauges
+- CPU / GPU temperature gauges — click one to expand the individual sensors
+  behind it (an M2 Pro reports 54 CPU probes; they're die sensors, not one per
+  core, so they're listed by SMC key, hottest first)
+- per-fan RPM gauges
 - an **Auto / Manual / Curve** mode picker
 - a **Fan speed** slider that applies live (or one slider per fan — switch the
   row from *Linked* to *Individual*)

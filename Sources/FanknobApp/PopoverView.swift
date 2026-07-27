@@ -228,11 +228,13 @@ private struct HelpView: View {
 
 private struct TempsSection: View {
     var model: FanModel
+    /// Which cluster is expanded, if any ("CPU"/"GPU").
+    @State private var expanded: String?
 
     var body: some View {
         VStack(spacing: 10) {
-            if let c = model.cpu { row("CPU", c) }
-            if let g = model.gpu { row("GPU", g) }
+            if let c = model.cpu { cluster("CPU", c, prefix: "Tp") }
+            if let g = model.gpu { cluster("GPU", g, prefix: "Tg") }
             if model.cpu == nil && model.gpu == nil {
                 if model.ready {
                     Text("No temperature sensors").font(.caption).foregroundStyle(.secondary)
@@ -243,15 +245,78 @@ private struct TempsSection: View {
         }
     }
 
-    private func row(_ label: String, _ value: Double) -> some View {
-        HStack(spacing: 10) {
-            Text(label).font(.callout).foregroundStyle(.secondary)
-                .frame(width: 38, alignment: .leading)
-            GaugeBar(value: value / 100, tint: tempColor(value))
-            Text("\(Int(value.rounded()))°")
-                .font(.callout.monospacedDigit().weight(.medium))
-                .frame(width: 40, alignment: .trailing)
+    private func cluster(_ label: String, _ value: Double, prefix: String) -> some View {
+        let isOpen = expanded == label
+        let detail = model.clusterSensors(prefix: prefix)
+        return VStack(spacing: 6) {
+            Button {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    expanded = isOpen ? nil : label
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(isOpen ? 90 : 0))
+                        Text(label).font(.callout).foregroundStyle(.secondary)
+                    }
+                    .frame(width: 46, alignment: .leading)
+                    GaugeBar(value: value / 100, tint: tempColor(value))
+                    Text("\(Int(value.rounded()))°")
+                        .font(.callout.monospacedDigit().weight(.medium))
+                        .frame(width: 40, alignment: .trailing)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(detail.isEmpty)
+            .help(detail.isEmpty ? "" : "\(detail.count) sensors — click for detail")
+
+            if isOpen { SensorList(sensors: detail) }
         }
+    }
+}
+
+/// The per-sensor breakdown behind a cluster. Capped and scrollable: an M2 Pro
+/// reports 54 CPU sensors, far more than its core count — they're die probes,
+/// not one-per-core, so they're labelled by SMC key rather than pretending.
+private struct SensorList: View {
+    var sensors: [TempSensor]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let hottest = sensors.first, let coolest = sensors.last {
+                Text("\(sensors.count) sensors · \(Int(coolest.celsius.rounded()))–\(Int(hottest.celsius.rounded()))°C")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+            }
+            ScrollView {
+                VStack(spacing: 3) {
+                    ForEach(sensors, id: \.key) { s in
+                        HStack(spacing: 8) {
+                            Text(s.key)
+                                .font(.system(size: 9, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 34, alignment: .leading)
+                            GaugeBar(value: s.celsius / 100,
+                                     tint: tempColor(s.celsius), height: 4)
+                            Text("\(Int(s.celsius.rounded()))°")
+                                .font(.system(size: 9, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 24, alignment: .trailing)
+                        }
+                    }
+                }
+                .padding(.trailing, 2)
+            }
+            // A definite height: maxHeight alone lets a ScrollView collapse to
+            // nothing inside a VStack. Grows with the list, capped so 54 CPU
+            // sensors don't push the popover off screen.
+            .frame(height: min(CGFloat(sensors.count) * 14 + 2, 132))
+        }
+        .padding(.leading, 12)
     }
 }
 
