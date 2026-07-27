@@ -227,6 +227,13 @@ private struct ControlSection: View {
 private struct SpeedControl: View {
     @Bindable var model: FanModel
 
+    /// In curve mode the slider is a read-only readout of what the curve is
+    /// asking for; in manual it's the setpoint the user drags.
+    private var sliderBinding: Binding<Double> {
+        Binding(get: { model.displayKnob },
+                set: { if model.mode != .curve { model.knob = $0 } })
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
@@ -256,7 +263,7 @@ private struct SpeedControl: View {
                     PerFanSlider(model: model, index: fan.index)
                 }
             } else {
-                Slider(value: $model.knob, in: 0...100) { editing in
+                Slider(value: sliderBinding, in: 0...100) { editing in
                     model.editing = editing
                     if editing { model.mode = .manual }   // grabbing = manual intent
                     else { model.applyKnob() }

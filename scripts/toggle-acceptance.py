@@ -15,11 +15,13 @@ Requirements:
 Usage:  python3 scripts/toggle-acceptance.py
 """
 
+import shutil
 import subprocess
 import sys
 import time
 
 CLICKER = "/tmp/fanknob-click"
+FANKNOB = shutil.which("fanknob") or "./.build/release/fanknob"
 PROC = "FanknobApp"
 TRIALS = 3
 WATCH_SECONDS = 2.2
@@ -68,7 +70,7 @@ def trial(target: tuple[int, int], expect: str, name: str) -> bool:
 
 def main() -> int:
     # Make sure the fans start in auto and the popover is open.
-    subprocess.run(["/usr/local/bin/fanknob", "auto"], capture_output=True)
+    subprocess.run([FANKNOB, "auto"], capture_output=True)
     time.sleep(1)
     if app("count of windows") == "0":
         app("click menu bar item 1 of menu bar 2")
@@ -88,7 +90,7 @@ def main() -> int:
         time.sleep(0.8)
 
     # Leave the fans under firmware control.
-    subprocess.run(["/usr/local/bin/fanknob", "auto"], capture_output=True)
+    subprocess.run([FANKNOB, "auto"], capture_output=True)
     print("RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 

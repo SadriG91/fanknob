@@ -62,8 +62,9 @@ final class Controller {
         case .auto:
             break   // the firmware already has the fans after boot
         case .manual(let knobs):
-            for k in knobs where apply(k.pct, fan: k.index, force: true) { }
-            log("restored manual setpoints")
+            for k in knobs { apply(k.pct, fan: k.index, force: true) }
+            log("restored manual setpoints: "
+                + knobs.map { "fan \($0.index) \(Int($0.pct))%" }.joined(separator: ", "))
         case .curve(let curve, let preset):
             log("restored curve: \(preset?.rawValue ?? "custom")")
             applyCurve(curve, force: true)
@@ -84,14 +85,18 @@ final class Controller {
 
     private var fanIndices: [Int] { Array(0..<fanCount(smc)) }
 
-    /// Write one fan. Curve ticks use a deadband so small drifts don't cause
-    /// audible hunting; explicit user commands force the write.
+    /// Write one fan and return the resolved RPM (nil if skipped or failed).
+    /// Curve ticks use a deadband so small drifts don't cause audible hunting;
+    /// explicit user commands force the write.
+    ///
+    /// The RPM comes from the write itself, never from reading the target back
+    /// — the SMC reports stale values for tens of ms after a write.
     @discardableResult
-    private func apply(_ pct: Double, fan: Int, force: Bool = false) -> Bool {
-        if !force, let last = lastApplied[fan], abs(last - pct) < 2 { return true }
-        guard (try? setFanKnob(smc, fan, pct: pct)) != nil else { return false }
+    private func apply(_ pct: Double, fan: Int, force: Bool = false) -> Double? {
+        if !force, let last = lastApplied[fan], abs(last - pct) < 2 { return nil }
+        guard let rpm = try? setFanKnob(smc, fan, pct: pct) else { return nil }
         lastApplied[fan] = pct
-        return true
+        return rpm
     }
 
     private func applyCurve(_ curve: FanCurve, force: Bool = false) {
@@ -219,8 +224,8 @@ final class Controller {
 
         var lines: [String] = []
         for i in fans {
-            if apply(pct, fan: i, force: true), let f = readFan(smc, i) {
-                lines.append(String(format: "fan %d -> %.0f rpm (knob %d%%)", i, f.target, Int(pct)))
+            if let rpm = apply(pct, fan: i, force: true) {
+                lines.append(String(format: "fan %d -> %.0f rpm (knob %d%%)", i, rpm, Int(pct)))
             } else {
                 lines.append("fan \(i): write failed")
             }
