@@ -73,6 +73,14 @@ jobs:
           done
           rm -f "$RUNNER_TEMP"/app.p12 "$RUNNER_TEMP"/installer.p12
 
+          # A .p12 doesn't reliably carry the issuing intermediate, and without
+          # it codesign fails with "unable to build chain to self-signed root"
+          # / errSecInternalComponent — while security verify-cert still passes,
+          # which makes it look like a key problem rather than a chain one.
+          curl -fsSL https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer \
+            -o "$RUNNER_TEMP/DeveloperIDG2CA.cer"
+          security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$KEYCHAIN"
+
           # Without this, codesign blocks on a keychain access prompt that has
           # nobody to answer it.
           security set-key-partition-list -S apple-tool:,apple: \
