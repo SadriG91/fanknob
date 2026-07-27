@@ -40,29 +40,79 @@ public func acquireDaemonLock(path: String = fanknobdLockPath) -> Int32? {
 public enum DaemonCommand: Equatable {
     case auto
     case set(pct: Double, holdSeconds: Int)
+    case setFan(index: Int, pct: Double, holdSeconds: Int)
+    case curve(FanCurve, preset: CurvePreset?)
+    case watchdog(celsius: Double?)
+    case state
 }
 
 public enum DaemonCommandError: Error, Equatable {
     case empty
     case badSet
+    case badFan
+    case badCurve
+    case badWatchdog
     case unknown(String)
 }
 
-/// Parse one protocol line ("auto" | "set <0-100> [seconds]"). Pure function —
-/// clamping and validation happen here so they're unit-testable.
+/// Parse one protocol line. Pure function — clamping and validation happen
+/// here so they're unit-testable, and so nothing unvalidated reaches the SMC.
+///
+///   auto
+///   set <0-100> [seconds]
+///   setfan <index> <0-100> [seconds]
+///   curve <°C>:<%>,<°C>:<%>[,...]
+///   preset quiet|balanced|turbo
+///   watchdog <°C>|off
+///   state
 public func parseDaemonCommand(_ line: String) -> Result<DaemonCommand, DaemonCommandError> {
     let parts = line.split(separator: " ").map(String.init)
     guard let verb = parts.first else { return .failure(.empty) }
+
+    func hold(_ index: Int) -> Int {
+        parts.count > index ? max(0, Int(parts[index]) ?? 0) : 0
+    }
+
     switch verb {
     case "auto":
         return .success(.auto)
+
+    case "state":
+        return .success(.state)
+
     case "set":
         guard parts.count >= 2, let v = Double(parts[1]), v.isFinite else {
             return .failure(.badSet)
         }
-        let pct = v.clamped(0, 100)
-        let seconds = parts.count >= 3 ? max(0, Int(parts[2]) ?? 0) : 0
-        return .success(.set(pct: pct, holdSeconds: seconds))
+        return .success(.set(pct: v.clamped(0, 100), holdSeconds: hold(2)))
+
+    case "setfan":
+        guard parts.count >= 3, let i = Int(parts[1]), i >= 0, i < 64,
+              let v = Double(parts[2]), v.isFinite else {
+            return .failure(.badFan)
+        }
+        return .success(.setFan(index: i, pct: v.clamped(0, 100), holdSeconds: hold(3)))
+
+    case "curve":
+        guard parts.count >= 2, let curve = FanCurve.parse(parts[1]) else {
+            return .failure(.badCurve)
+        }
+        return .success(.curve(curve, preset: nil))
+
+    case "preset":
+        guard parts.count >= 2, let preset = CurvePreset(rawValue: parts[1].lowercased()) else {
+            return .failure(.badCurve)
+        }
+        return .success(.curve(preset.curve, preset: preset))
+
+    case "watchdog":
+        guard parts.count >= 2 else { return .failure(.badWatchdog) }
+        if parts[1].lowercased() == "off" { return .success(.watchdog(celsius: nil)) }
+        guard let c = Double(parts[1]), c.isFinite, c > 0, c <= 120 else {
+            return .failure(.badWatchdog)
+        }
+        return .success(.watchdog(celsius: c))
+
     default:
         return .failure(.unknown(verb))
     }

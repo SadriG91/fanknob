@@ -114,8 +114,12 @@ func holdLabel(_ s: Int) -> String {
 }
 func fmtClock(_ seconds: Int) -> String { String(format: "%d:%02d", seconds / 60, seconds % 60) }
 
+/// Cycle for the `c` key: firmware control, then the built-in curves.
+let presetCycle: [CurvePreset?] = [nil] + CurvePreset.allCases.map { $0 }
+
 func renderFrame(_ smc: SMC, tempKeys: [UInt32], knob: Double, canWrite: Bool,
-                 chip: String, holdSeconds: Int, holdDeadline: Date?) -> String {
+                 chip: String, holdSeconds: Int, holdDeadline: Date?,
+                 daemon: DaemonState?) -> String {
     let W = 24  // gauge width
     var L: [String] = []
 
@@ -170,12 +174,30 @@ func renderFrame(_ smc: SMC, tempKeys: [UInt32], knob: Double, canWrite: Bool,
     }
     L.append(" \(Ansi.fg(250))HOLD\(Ansi.reset) \(holdText)")
 
+    // What the daemon is driving (curves only exist there).
+    if let d = daemon {
+        var modeText: String
+        switch d.mode {
+        case "curve":
+            let name = d.preset ?? "custom"
+            modeText = "\(Ansi.fg(213))curve \(name)\(Ansi.reset)"
+            if let c = d.curve { modeText += " \(Ansi.dim)\(c)\(Ansi.reset)" }
+            if let k = d.knob { modeText += String(format: " \(Ansi.fg(250))→ %.0f%%\(Ansi.reset)", k) }
+        case "manual":
+            modeText = "\(Ansi.fg(213))manual\(Ansi.reset)"
+        default:
+            modeText = "\(Ansi.dim)auto\(Ansi.reset)"
+        }
+        if d.watchdogTripped { modeText += "  \(Ansi.fg(208))⚠ watchdog\(Ansi.reset)" }
+        L.append(" \(Ansi.fg(250))MODE\(Ansi.reset) \(modeText)")
+    }
+
     // Footer
     L.append(" \(Ansi.fg(240))" + String(repeating: "─", count: 46) + Ansi.reset)
     if canWrite {
-        L.append(" \(Ansi.dim)←/→ ±5  ↑/↓ ±1  1-9 preset  t hold  a auto  q quit\(Ansi.reset)")
+        L.append(" \(Ansi.dim)←/→ ±5  ↑/↓ ±1  0-9 speed  c curve  t hold  a auto  q quit\(Ansi.reset)")
     } else {
-        L.append(" \(Ansi.dim)q quit   ·   run 'sudo make install' to enable control\(Ansi.reset)")
+        L.append(" \(Ansi.dim)q quit   ·   install the daemon to enable control\(Ansi.reset)")
     }
 
     return Ansi.home + L.map { $0 + Ansi.clearEOL }.joined(separator: "\r\n") + "\r\n" + Ansi.clearBelow
@@ -191,6 +213,12 @@ func runTUI(_ smc: SMC) {
     var knob = (0..<fanCount(smc)).compactMap { readFan(smc, $0) }.first?.knob ?? 0
     var holdSeconds = 0
     var holdDeadline: Date? = nil
+    var presetIndex = 0
+
+    func daemonState() -> DaemonState? {
+        guard case .ok(let reply) = sendToDaemon("state") else { return nil }
+        return DaemonState.decode(reply)
+    }
 
     enableRawMode()
     signal(SIGINT, signalHandler)
@@ -212,7 +240,8 @@ func runTUI(_ smc: SMC) {
         }
 
         print(renderFrame(smc, tempKeys: tempKeys, knob: knob, canWrite: canWrite,
-                          chip: chip, holdSeconds: holdSeconds, holdDeadline: holdDeadline),
+                          chip: chip, holdSeconds: holdSeconds, holdDeadline: holdDeadline,
+                          daemon: daemonState()),
               terminator: "")
         fflush(stdout)
 
@@ -238,6 +267,16 @@ func runTUI(_ smc: SMC) {
                 let idx = holdCycle.firstIndex(of: holdSeconds) ?? 0
                 holdSeconds = holdCycle[(idx + 1) % holdCycle.count]
                 arm()
+            case UInt8(ascii: "c"), UInt8(ascii: "C"):
+                // Cycle firmware control → quiet → balanced → turbo.
+                guard canWrite else { break }
+                presetIndex = (presetIndex + 1) % presetCycle.count
+                holdDeadline = nil
+                if let preset = presetCycle[presetIndex] {
+                    _ = sendToDaemon("preset \(preset.rawValue)")
+                } else {
+                    _ = sendToDaemon("auto")
+                }
             case UInt8(ascii: "+"), UInt8(ascii: "="): knob = min(100, knob + 5); arm()
             case UInt8(ascii: "-"), UInt8(ascii: "_"): knob = max(0, knob - 5); arm()
             case UInt8(ascii: "0")...UInt8(ascii: "9"):

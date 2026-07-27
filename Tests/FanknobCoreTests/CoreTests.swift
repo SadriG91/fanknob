@@ -141,6 +141,113 @@ import Foundation
     }
 }
 
+// MARK: - Fan curves
+
+@Suite struct FanCurveTests {
+    private let curve = FanCurve([
+        .init(celsius: 50, knob: 0),
+        .init(celsius: 70, knob: 50),
+        .init(celsius: 90, knob: 100),
+    ])!
+
+    @Test func flatOutsideEndpoints() {
+        #expect(curve.knob(at: 20) == 0)
+        #expect(curve.knob(at: 50) == 0)
+        #expect(curve.knob(at: 90) == 100)
+        #expect(curve.knob(at: 120) == 100)
+    }
+
+    @Test func interpolatesBetweenPoints() {
+        #expect(curve.knob(at: 60) == 25)    // midpoint of 50→70 / 0→50
+        #expect(curve.knob(at: 70) == 50)
+        #expect(curve.knob(at: 80) == 75)
+    }
+
+    @Test func sortsUnorderedPoints() {
+        let c = FanCurve([
+            .init(celsius: 90, knob: 100),
+            .init(celsius: 50, knob: 0),
+        ])!
+        #expect(c.points.first?.celsius == 50)
+        #expect(c.knob(at: 70) == 50)
+    }
+
+    @Test func clampsKnobValues() {
+        let c = FanCurve([.init(celsius: 50, knob: -20), .init(celsius: 90, knob: 500)])!
+        #expect(c.knob(at: 50) == 0)
+        #expect(c.knob(at: 90) == 100)
+    }
+
+    @Test func needsAtLeastTwoPoints() {
+        #expect(FanCurve([]) == nil)
+        #expect(FanCurve([.init(celsius: 50, knob: 10)]) == nil)
+    }
+
+    @Test func parseRoundtrip() {
+        let parsed = FanCurve.parse("55:0,72:20,85:60,93:100")
+        #expect(parsed != nil)
+        #expect(parsed?.wireFormat == "55:0,72:20,85:60,93:100")
+        #expect(parsed?.knob(at: 72) == 20)
+    }
+
+    @Test func parseRejectsGarbage() {
+        #expect(FanCurve.parse("") == nil)
+        #expect(FanCurve.parse("hot:fast") == nil)
+        #expect(FanCurve.parse("55:0") == nil)          // single point
+        #expect(FanCurve.parse("55,72:20") == nil)      // missing knob
+        #expect(FanCurve.parse("nan:0,72:20") == nil)
+    }
+
+    @Test func presetsRiseWithTemperature() {
+        for preset in CurvePreset.allCases {
+            let c = preset.curve
+            let knobs = c.points.map(\.knob)
+            #expect(zip(knobs, knobs.dropFirst()).allSatisfy { $0 <= $1 },
+                    "\(preset.rawValue) should never cool down as it heats up")
+            #expect(c.knob(at: 100) == 100, "\(preset.rawValue) should reach full at high temps")
+        }
+    }
+}
+
+// MARK: - Config persistence
+
+@Suite struct ConfigTests {
+    private func roundtrip(_ config: DaemonConfig) -> DaemonConfig? {
+        // Unique per call: Swift Testing runs these in parallel.
+        let path = NSTemporaryDirectory() + "fanknob-config-\(UUID().uuidString).json"
+        defer { unlink(path) }
+        #expect(config.save(to: path))
+        return DaemonConfig.load(from: path)
+    }
+
+    @Test func autoRoundtrips() {
+        #expect(roundtrip(DaemonConfig(mode: .auto)) == DaemonConfig(mode: .auto))
+    }
+
+    @Test func manualRoundtrips() {
+        let c = DaemonConfig(mode: .manual([FanKnob(index: 0, pct: 40),
+                                            FanKnob(index: 1, pct: 55)]))
+        #expect(roundtrip(c) == c)
+    }
+
+    @Test func curveRoundtripsWithPreset() {
+        let c = DaemonConfig(mode: .curve(CurvePreset.quiet.curve, preset: .quiet),
+                             watchdogCelsius: 90)
+        #expect(roundtrip(c) == c)
+    }
+
+    @Test func missingFileLoadsNil() {
+        #expect(DaemonConfig.load(from: "/nonexistent/fanknob.json") == nil)
+    }
+
+    @Test func stateWireFormatRoundtrips() {
+        let s = DaemonState(mode: "curve", preset: "quiet", curve: "55:0,90:100",
+                            knob: 42, watchdogCelsius: 95, watchdogTripped: true,
+                            holdRemaining: 30)
+        #expect(DaemonState.decode(s.encoded()) == s)
+    }
+}
+
 // MARK: - Daemon singleton lock
 
 @Suite struct DaemonLockTests {
@@ -203,5 +310,39 @@ import Foundation
     @Test func rejectsEmptyAndUnknown() {
         #expect(parseDaemonCommand("") == .failure(.empty))
         #expect(parseDaemonCommand("reboot") == .failure(.unknown("reboot")))
+    }
+
+    @Test func perFanCommands() {
+        #expect(parseDaemonCommand("setfan 1 60") == .success(.setFan(index: 1, pct: 60, holdSeconds: 0)))
+        #expect(parseDaemonCommand("setfan 0 60 30") == .success(.setFan(index: 0, pct: 60, holdSeconds: 30)))
+        #expect(parseDaemonCommand("setfan 150") == .failure(.badFan))     // no pct
+        #expect(parseDaemonCommand("setfan -1 60") == .failure(.badFan))
+        #expect(parseDaemonCommand("setfan x 60") == .failure(.badFan))
+    }
+
+    @Test func presetCommand() {
+        #expect(parseDaemonCommand("preset quiet") == .success(.curve(CurvePreset.quiet.curve, preset: .quiet)))
+        #expect(parseDaemonCommand("preset TURBO") == .success(.curve(CurvePreset.turbo.curve, preset: .turbo)))
+        #expect(parseDaemonCommand("preset silent") == .failure(.badCurve))
+        #expect(parseDaemonCommand("preset") == .failure(.badCurve))
+    }
+
+    @Test func curveCommand() {
+        let expected = FanCurve.parse("55:0,90:100")!
+        #expect(parseDaemonCommand("curve 55:0,90:100") == .success(.curve(expected, preset: nil)))
+        #expect(parseDaemonCommand("curve nonsense") == .failure(.badCurve))
+        #expect(parseDaemonCommand("curve") == .failure(.badCurve))
+    }
+
+    @Test func watchdogCommand() {
+        #expect(parseDaemonCommand("watchdog 95") == .success(.watchdog(celsius: 95)))
+        #expect(parseDaemonCommand("watchdog off") == .success(.watchdog(celsius: nil)))
+        #expect(parseDaemonCommand("watchdog 0") == .failure(.badWatchdog))
+        #expect(parseDaemonCommand("watchdog 500") == .failure(.badWatchdog))
+        #expect(parseDaemonCommand("watchdog") == .failure(.badWatchdog))
+    }
+
+    @Test func stateCommand() {
+        #expect(parseDaemonCommand("state") == .success(.state))
     }
 }

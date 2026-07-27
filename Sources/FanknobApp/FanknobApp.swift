@@ -53,7 +53,7 @@ struct FanknobApp: App {
         MenuBarExtra {
             PopoverView(model: model)
         } label: {
-            Image(nsImage: statusImage(temp: model.menuTemp, manual: model.manual))
+            Image(nsImage: statusImage(temp: model.menuTemp, manual: model.overriding))
         }
         .menuBarExtraStyle(.window)   // rich popover content (sliders, gauges)
     }

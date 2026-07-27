@@ -7,13 +7,16 @@
 //   - All published state is touched only on the main queue.
 //   - Polls coalesce: a new poll is never queued while one is in flight, so
 //     slow reads can't stack up and delay user actions behind them.
-//   - `writesInFlight` guards against the "toggle bounce": a poll snapshotted
-//     BEFORE a user action would otherwise publish AFTER it and yank the
-//     optimistic UI state (Auto/Manual, knob) backwards for a beat.
+//   - `writesInFlight` and the mode intent guard stop a poll snapshotted
+//     BEFORE a user action from publishing AFTER it and yanking the UI back.
 //   - While dragging, the knob applies live but throttled (~6 writes/s).
+//
+// Mode of record is the DAEMON's own state when it's reachable: in curve mode
+// the SMC just reports "manual", so only the daemon knows a curve is driving.
 
 import SwiftUI
 import Observation
+import ServiceManagement
 import FanknobCore
 
 // Diagnostics: timestamped event log at /tmp/fanknob-ui.log.
@@ -36,6 +39,10 @@ enum UILog {
     }
 }
 
+enum UIMode: String, CaseIterable {
+    case auto, manual, curve
+}
+
 @Observable
 final class FanModel {
     // workQueue-confined (created there in init; serial queue orders all access)
@@ -50,14 +57,11 @@ final class FanModel {
     @ObservationIgnored private var writesInFlight = 0
     @ObservationIgnored private var lastLiveApply = Date.distantPast
     @ObservationIgnored private var pendingLiveApply: DispatchWorkItem?
-    // Mode intent guard: the SMC reports the OLD fan mode for tens of ms after
-    // a write (the fan firmware applies mode changes asynchronously), so a
-    // poll right after a completed write reads stale hardware and would yank
-    // the toggle back. After a user action we suspend mode reconciliation
-    // until the hardware AGREES with the intent — or a timeout passes (write
-    // genuinely failed / external change), at which point hardware wins again.
-    @ObservationIgnored private var pendingMode: Bool?
+    // Mode intent guard, for the no-daemon case where the SMC reports the OLD
+    // fan mode for tens of ms after a write.
+    @ObservationIgnored private var pendingMode: UIMode?
     @ObservationIgnored private var pendingModeUntil = Date.distantPast
+    @ObservationIgnored private var tick = 0
 
     @ObservationIgnored let chip = chipName()
 
@@ -69,32 +73,44 @@ final class FanModel {
     var canWrite = false
     /// False until the first hardware snapshot lands (sensor discovery ~0.4 s).
     var ready = false
-    /// Menu-bar degrees. Separate from `cpu` and updated only when the shown
-    /// integer changes, so the status-item label re-renders rarely instead of
-    /// every poll.
+    /// Menu-bar degrees, updated only when the shown integer changes.
     var menuTemp: Int?
-    /// Whether the popover window is currently on screen. Drives poll cadence
-    /// AND pauses the spinner — MenuBarExtra(.window) keeps the content view
-    /// alive while closed, so a TimelineView would otherwise tick forever.
+    /// Whether the popover window is on screen — drives poll cadence and
+    /// pauses the spinner (MenuBarExtra keeps the view alive while closed).
     var popoverShown = false
 
+    var mode: UIMode = .auto
     var knob: Double = 0
+    /// Per-fan setpoints for unlinked manual control.
+    var fanKnobs: [Int: Double] = [:]
+    var linkFans = true
+
+    var preset: CurvePreset = .balanced
+    /// What the curve is asking for right now (daemon-reported).
+    var curveKnob: Double?
+
     var holdSeconds = 0
-    var holdDeadline: Date?
-    /// Seconds left on an armed hold; ticks down with each poll.
     var holdRemaining = 0
+    var watchdogCelsius: Double? = DaemonConfig.defaultWatchdogCelsius
+    var watchdogTripped = false
+    /// True when no daemon is running but the app could still drive fans as
+    /// root — curves need the daemon, so the UI hides them.
+    var daemonPresent = false
 
-    /// True while the user is dragging the slider.
+    /// True while the user is dragging a slider.
     var editing = false
-    /// Optimistic mode for the UI; reconciled with hardware when no write is
-    /// in flight and the user isn't dragging.
-    var manual = false
 
-    // Adaptive polling: full 1 Hz only while the popover is visible; closed,
-    // the app only needs the menu-bar degrees, so a light poll (CPU-cluster
-    // sensors only) every 5th tick suffices. This cuts idle CPU from ~5% of
-    // a core to well under 1%.
-    @ObservationIgnored private var tick = 0
+    var launchAtLogin: Bool {
+        get { SMAppService.mainApp.status == .enabled }
+        set {
+            do {
+                newValue ? try SMAppService.mainApp.register()
+                         : try SMAppService.mainApp.unregister()
+            } catch {
+                UILog.log("launch-at-login \(newValue) failed: \(error)")
+            }
+        }
+    }
 
     init() {
         workQueue.async { [weak self] in
@@ -102,10 +118,11 @@ final class FanModel {
             self.controller = FanController()   // opens SMC + discovers sensors
             let snap = self.controller.snapshot(.full)
             let writable = self.controller.canWrite
+            let state = self.controller.daemonState()
             DispatchQueue.main.async {
                 self.ready = true
-                self.publish(snap: snap, writable: writable)
-                if !self.manual { self.knob = snap.fans.first?.knob ?? 0 }
+                self.publish(snap: snap, writable: writable, state: state)
+                if self.mode != .manual { self.knob = snap.fans.first?.knob ?? 0 }
             }
         }
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
@@ -141,8 +158,17 @@ final class FanModel {
         return "—"
     }
 
+    /// The user is overriding the firmware (manual or curve).
+    var overriding: Bool { mode != .auto }
+
     var countdown: String {
         String(format: "%d:%02d", holdRemaining / 60, holdRemaining % 60)
+    }
+
+    /// Effective knob to display: the curve's output in curve mode, else the
+    /// slider position.
+    var displayKnob: Double {
+        mode == .curve ? (curveKnob ?? 0) : knob
     }
 
     /// Spin rate for the popover's fan icon: gentle at idle, brisk at full
@@ -154,7 +180,7 @@ final class FanModel {
         return 0.4 + 2.6 * fraction.clamped(0, 1)
     }
 
-    // MARK: Polling (pollOnce/publish run on the main queue)
+    // MARK: Polling (all on the main queue)
 
     private func pollOnce(_ scope: SnapshotScope = .full) {
         // Coalesce, but never drop a request: if a poll is in flight, run one
@@ -169,62 +195,72 @@ final class FanModel {
             }
             let snap = self.controller.snapshot(scope)
             let writable = self.controller.canWrite
+            let state = self.controller.daemonState()
             DispatchQueue.main.async {
                 self.pollInFlight = false
-                self.publish(snap: snap, writable: writable)
+                self.publish(snap: snap, writable: writable, state: state)
                 if self.pollAgain { self.pollAgain = false; self.pollOnce(.full) }
             }
         }
     }
 
-    private func publish(snap: Snapshot, writable: Bool) {
-        // Assign only when values actually change: @Observable notifies on
-        // every set (no equality check), and spurious sets re-render the
-        // control views each poll — interrupting the toggle's click animation.
+    private func publish(snap: Snapshot, writable: Bool, state: DaemonState?) {
+        // Assign only when values change: @Observable notifies on every set,
+        // and spurious sets re-render the control views each poll.
         if fans != snap.fans { fans = snap.fans }
         if cpu != snap.temps.cpu { cpu = snap.temps.cpu }
-        // Light polls omit the GPU cluster; don't wipe the last full reading.
-        if let g = snap.temps.gpu, gpu != g { gpu = g }
+        if let g = snap.temps.gpu, gpu != g { gpu = g }   // light polls omit GPU
         if canWrite != writable { canWrite = writable }
+        if daemonPresent != (state != nil) { daemonPresent = state != nil }
+
         let shownTemp = (snap.temps.cpu ?? snap.temps.gpu).map { Int($0.rounded()) }
         if menuTemp != shownTemp { menuTemp = shownTemp }
-        // Reconcile mode with hardware ONLY when the user isn't mid-action:
-        // a poll snapshotted before a write must not undo the optimistic state.
-        //
-        // Deliberately NO knob sync here: in auto the firmware target drifts
-        // across whole-% boundaries almost every poll, and each sync re-rendered
-        // the control section — if that rebuild landed between mouse-down and
-        // mouse-up on the mode toggle, AppKit cancelled the click ("sticky
-        // toggle"). The knob is the user's setpoint; it's seeded on entering
-        // Manual instead.
-        if !editing {
-            let hwManual = snap.fans.contains { $0.managed }
-            // Clear the intent once hardware catches up (or on timeout).
-            if let want = pendingMode, hwManual == want || Date() >= pendingModeUntil {
-                pendingMode = nil
-            }
-            if pendingMode == nil && writesInFlight == 0 && manual != hwManual {
-                UILog.log("publish: manual \(manual) -> \(hwManual)")
-                manual = hwManual
-            }
+
+        // Clear the intent guard once reality agrees (or it times out).
+        if let want = pendingMode {
+            let actual = observedMode(snap: snap, state: state)
+            if actual == want || Date() >= pendingModeUntil { pendingMode = nil }
         }
-        if let d = holdDeadline {
-            let left = max(0, Int(d.timeIntervalSinceNow.rounded()))
-            if holdRemaining != left { holdRemaining = left }
-            if left == 0 { holdDeadline = nil }
+
+        guard !editing, writesInFlight == 0, pendingMode == nil else { return }
+
+        let observed = observedMode(snap: snap, state: state)
+        if mode != observed { mode = observed }
+
+        if let state {
+            if let p = state.preset.flatMap(CurvePreset.init(rawValue:)), preset != p { preset = p }
+            if curveKnob != state.knob && observed == .curve { curveKnob = state.knob }
+            if watchdogCelsius != state.watchdogCelsius { watchdogCelsius = state.watchdogCelsius }
+            if watchdogTripped != state.watchdogTripped { watchdogTripped = state.watchdogTripped }
+            if holdRemaining != state.holdRemaining { holdRemaining = state.holdRemaining }
         }
+
+        // In manual mode the fans' targets ARE the setpoints, so mirroring them
+        // keeps the UI honest when the CLI or TUI changes something. Never sync
+        // in auto (the firmware target drifts constantly and would re-render
+        // the controls mid-click).
+        if observed == .manual {
+            var perFan: [Int: Double] = [:]
+            for f in snap.fans { perFan[f.index] = f.knob.rounded() }
+            if fanKnobs != perFan { fanKnobs = perFan }
+            if let first = snap.fans.first?.knob.rounded(), linkFans, knob != first { knob = first }
+        }
+    }
+
+    /// Mode of record: the daemon knows about curves; the SMC only sees
+    /// "managed". Fall back to the SMC when there's no daemon.
+    private func observedMode(snap: Snapshot, state: DaemonState?) -> UIMode {
+        if let state { return UIMode(rawValue: state.mode) ?? .auto }
+        return snap.fans.contains { $0.managed } ? .manual : .auto
     }
 
     /// Run a controller write on the workQueue, tracking it so polls can't
     /// clobber optimistic UI state, then refresh immediately after it lands.
     private func performWrite(_ op: @escaping (FanController) -> Void) {
         writesInFlight += 1
-        UILog.log("write enqueued (inFlight=\(writesInFlight))")
         workQueue.async { [weak self] in
             guard let self else { return }
-            let t = Date()
             op(self.controller)
-            UILog.log(String(format: "write op done in %.0f ms", -t.timeIntervalSinceNow * 1000))
             DispatchQueue.main.async {
                 self.writesInFlight -= 1
                 self.pollOnce()
@@ -232,62 +268,81 @@ final class FanModel {
         }
     }
 
+    private func intend(_ m: UIMode) {
+        mode = m
+        pendingMode = m
+        pendingModeUntil = Date().addingTimeInterval(1.5)
+        watchdogTripped = false
+    }
+
     // MARK: Control (called from the UI on the main queue)
 
-    func setMode(_ toManual: Bool) {
-        UILog.log("setMode(\(toManual)) manual=\(manual) canWrite=\(canWrite)")
-        if toManual {
-            // Seed the knob from the current speed so Manual takes over right
-            // where the firmware left off (fans data is ≤1 s old).
-            if !manual, let k = fans.first?.knob { knob = k.rounded() }
-            applyKnob()
-        } else {
-            setAuto()
+    func setMode(_ m: UIMode) {
+        guard canWrite, m != mode else { return }
+        switch m {
+        case .auto:   setAuto()
+        case .manual: applyKnob()
+        case .curve:  selectPreset(preset)
         }
     }
 
     func setAuto() {
         guard canWrite else { return }
         pendingLiveApply?.cancel(); pendingLiveApply = nil
-        manual = false
-        pendingMode = false
-        pendingModeUntil = Date().addingTimeInterval(1.5)
-        holdDeadline = nil
+        intend(.auto)
         holdRemaining = 0
+        curveKnob = nil
         performWrite { $0.auto() }
     }
 
     /// Authoritative apply: slider release, mode switch, or hold change.
-    func applyKnob() {
+    /// `fan` targets a single fan when the user has unlinked them.
+    func applyKnob(fan: Int? = nil) {
         guard canWrite else { return }
         pendingLiveApply?.cancel(); pendingLiveApply = nil
-        manual = true
-        pendingMode = true
-        pendingModeUntil = Date().addingTimeInterval(1.5)
+        intend(.manual)
         lastLiveApply = Date()
-        let k = knob, h = holdSeconds
-        holdDeadline = h > 0 ? Date().addingTimeInterval(Double(h)) : nil
-        holdRemaining = h
-        performWrite { $0.setKnob(k, holdSeconds: h) }
+        let pct = fan.flatMap { fanKnobs[$0] } ?? knob
+        let hold = holdSeconds
+        holdRemaining = hold
+        if fan == nil && linkFans {
+            for i in fans.map(\.index) { fanKnobs[i] = knob }
+        }
+        performWrite { $0.setKnob(pct, fan: fan, holdSeconds: hold) }
     }
 
     /// Live apply while dragging, throttled to ~6 writes/s with a trailing
     /// edge so the final drag position is never dropped.
-    func liveApply() {
+    func liveApply(fan: Int? = nil) {
         guard editing, canWrite else { return }
-        manual = true
+        mode = .manual
         let now = Date()
         if now.timeIntervalSince(lastLiveApply) >= 0.15 {
             lastLiveApply = now
-            let k = knob, h = holdSeconds
-            performWrite { $0.setKnob(k, holdSeconds: h) }
+            let pct = fan.flatMap { fanKnobs[$0] } ?? knob
+            let hold = holdSeconds
+            performWrite { $0.setKnob(pct, fan: fan, holdSeconds: hold) }
         } else if pendingLiveApply == nil {
             let work = DispatchWorkItem { [weak self] in
                 self?.pendingLiveApply = nil
-                self?.liveApply()
+                self?.liveApply(fan: fan)
             }
             pendingLiveApply = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.16, execute: work)
         }
+    }
+
+    func selectPreset(_ p: CurvePreset) {
+        guard canWrite, daemonPresent else { return }
+        preset = p
+        intend(.curve)
+        holdRemaining = 0
+        performWrite { $0.setPreset(p) }
+    }
+
+    func setWatchdog(_ celsius: Double?) {
+        guard canWrite, daemonPresent else { return }
+        watchdogCelsius = celsius
+        performWrite { $0.setWatchdog(celsius) }
     }
 }

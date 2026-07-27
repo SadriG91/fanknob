@@ -4,6 +4,10 @@
 // dependencies per View.body, so with separate children the 1 Hz poll (fans,
 // temps) re-renders only the rows that changed — it can no longer re-render
 // the mode toggle / slider mid-click, which is what made them feel sticky.
+//
+// The control block keeps a constant height across modes (one mode picker, one
+// speed row, one segmented row) so switching Auto/Manual/Curve never resizes
+// the popover. Only the explicit "individual fans" disclosure changes height.
 
 import SwiftUI
 import AppKit
@@ -22,7 +26,7 @@ func tempColor(_ c: Double) -> Color {
     }
 }
 
-/// The single accent used for the active/manual state — the user's system
+/// The single accent used for the active/override state — the user's system
 /// accent color, so it stays tasteful and neutral. Everything else is greyscale.
 let activeAccent = Color.accentColor
 
@@ -89,19 +93,24 @@ private struct HeaderSection: View {
     var body: some View {
         HStack(spacing: 8) {
             SpinningFanIcon(revsPerSecond: model.iconRevsPerSecond,
-                            tint: model.manual ? activeAccent : .secondary,
+                            tint: model.overriding ? activeAccent : .secondary,
                             paused: !model.popoverShown)
             Text("fanknob").font(.headline)
             Spacer()
-            Text(model.chip).font(.caption).foregroundStyle(.secondary)
+            if model.watchdogTripped {
+                Label("too hot — back to auto", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(.orange)
+                    .help("The thermal watchdog returned the fans to firmware control")
+            } else {
+                Text(model.chip).font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 }
 
 /// Fan icon spinning at a rate that tracks the real fan speed. The angle is
 /// integrated frame-by-frame (angle += dt · speed) so speed changes are
-/// seamless — no animation restarts. Isolated child view: the ~30 fps tick
-/// re-renders only this icon, and TimelineView pauses when the popover closes.
+/// seamless — no animation restarts.
 private struct SpinningFanIcon: View {
     var revsPerSecond: Double
     var tint: Color
@@ -141,11 +150,7 @@ private struct TempsSection: View {
                 if model.ready {
                     Text("No temperature sensors").font(.caption).foregroundStyle(.secondary)
                 } else {
-                    HStack {
-                        Spacer()
-                        ProgressView().controlSize(.small)
-                        Spacer()
-                    }
+                    HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
                 }
             }
         }
@@ -186,79 +191,158 @@ private struct FansSection: View {
     }
 }
 
-// MARK: - Control (mode toggle, knob, hold)
+// MARK: - Control (mode, speed, hold/preset)
 
 private struct ControlSection: View {
     @Bindable var model: FanModel
 
-    private var modeBinding: Binding<Bool> {
-        Binding(get: { model.manual }, set: { model.setMode($0) })
+    private var modeBinding: Binding<UIMode> {
+        Binding(get: { model.mode }, set: { model.setMode($0) })
     }
 
     var body: some View {
-        let _ = UILog.log("ControlSection body eval (manual=\(model.manual))")
-        return VStack(alignment: .leading, spacing: 12) {
-            // Mode — the clear source of truth.
+        VStack(alignment: .leading, spacing: 12) {
             Picker("", selection: modeBinding) {
-                Text("Auto").tag(false)
-                Text("Manual").tag(true)
+                Text("Auto").tag(UIMode.auto)
+                Text("Manual").tag(UIMode.manual)
+                if model.daemonPresent { Text("Curve").tag(UIMode.curve) }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(maxWidth: .infinity)   // full-width = bigger click targets
+            .frame(maxWidth: .infinity)
             .disabled(!model.canWrite)
 
-            // Knob
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("Fan speed").font(.subheadline).foregroundStyle(.secondary)
-                    Spacer()
-                    // Both value variants share the same text metrics, so the
-                    // row height is naturally constant across mode switches —
-                    // the accent color + bold weight carry the emphasis.
-                    if model.manual {
-                        Text("\(Int(model.knob))%")
-                            .font(.subheadline.monospacedDigit().weight(.bold))
-                            .foregroundStyle(activeAccent)
-                    } else {
-                        Text("auto").font(.subheadline.weight(.medium))
-                            .foregroundStyle(.secondary)
+            SpeedControl(model: model)
+
+            // Third row swaps by mode but keeps the same height.
+            if model.mode == .curve {
+                PresetRow(model: model)
+            } else {
+                HoldRow(model: model)
+            }
+        }
+    }
+}
+
+private struct SpeedControl: View {
+    @Bindable var model: FanModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Fan speed").font(.subheadline).foregroundStyle(.secondary)
+                if model.fans.count > 1 && model.mode == .manual {
+                    Button(model.linkFans ? "Linked" : "Individual") {
+                        withAnimation(.easeOut(duration: 0.15)) { model.linkFans.toggle() }
                     }
+                    .buttonStyle(.plain)
+                    .font(.caption2)
+                    .foregroundStyle(activeAccent)
+                    .help("Control both fans together or separately")
                 }
-                Slider(value: $model.knob, in: 0...100) { editing in
-                    model.editing = editing
-                    if editing { model.manual = true }   // grabbing = manual intent
-                    else { model.applyKnob() }           // release = authoritative apply
+                Spacer()
+                switch model.mode {
+                case .auto:
+                    Text("auto").font(.subheadline.weight(.medium)).foregroundStyle(.secondary)
+                case .manual, .curve:
+                    Text("\(Int(model.displayKnob))%")
+                        .font(.subheadline.monospacedDigit().weight(.bold))
+                        .foregroundStyle(activeAccent)
                 }
-                .onChange(of: model.knob) { _, _ in
-                    model.liveApply()                    // throttled live apply mid-drag
-                }
-                .tint(model.manual ? activeAccent : Color.secondary)
-                .disabled(!model.canWrite)
             }
 
-            // Hold — only meaningful in manual mode. The label swaps to the
-            // ticking countdown while a hold is armed (same line, same height),
-            // so the popover never resizes and there's no reserved blank line.
-            HStack(spacing: 8) {
-                HoldLabel(model: model)
-                    .frame(width: 38, alignment: .leading)
-                Picker("", selection: $model.holdSeconds) {
-                    Text("Off").tag(0)
-                    Text("30s").tag(30)
-                    Text("1m").tag(60)
-                    Text("2m").tag(120)
-                    Text("5m").tag(300)
+            if model.mode == .manual && !model.linkFans {
+                ForEach(model.fans, id: \.index) { fan in
+                    PerFanSlider(model: model, index: fan.index)
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .onChange(of: model.holdSeconds) { _, _ in
-                    if model.manual { model.applyKnob() }
+            } else {
+                Slider(value: $model.knob, in: 0...100) { editing in
+                    model.editing = editing
+                    if editing { model.mode = .manual }   // grabbing = manual intent
+                    else { model.applyKnob() }
+                }
+                .onChange(of: model.knob) { _, _ in model.liveApply() }
+                .tint(model.mode == .manual ? activeAccent : Color.secondary)
+                .disabled(!model.canWrite || model.mode == .curve)
+                .help(model.mode == .curve ? "The curve is driving the fans" : "")
+            }
+        }
+    }
+}
+
+private struct PerFanSlider: View {
+    @Bindable var model: FanModel
+    let index: Int
+
+    private var binding: Binding<Double> {
+        Binding(get: { model.fanKnobs[index] ?? model.knob },
+                set: { model.fanKnobs[index] = $0 })
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("\(index)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                .frame(width: 10)
+            Slider(value: binding, in: 0...100) { editing in
+                model.editing = editing
+                if !editing { model.applyKnob(fan: index) }
+            }
+            .onChange(of: model.fanKnobs[index] ?? 0) { _, _ in model.liveApply(fan: index) }
+            .tint(activeAccent)
+            .disabled(!model.canWrite)
+            Text("\(Int(model.fanKnobs[index] ?? 0))%")
+                .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                .frame(width: 32, alignment: .trailing)
+        }
+    }
+}
+
+private struct PresetRow: View {
+    @Bindable var model: FanModel
+
+    private var presetBinding: Binding<CurvePreset> {
+        Binding(get: { model.preset }, set: { model.selectPreset($0) })
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("Curve").font(.subheadline).foregroundStyle(.secondary)
+                .frame(width: 38, alignment: .leading)
+            Picker("", selection: presetBinding) {
+                ForEach(CurvePreset.allCases, id: \.self) { p in
+                    Text(p.label).tag(p)
                 }
             }
-            .disabled(!model.canWrite || !model.manual)
-            .opacity(model.manual ? 1 : 0.4)
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .disabled(!model.canWrite)
         }
+        .help("Fan speed follows CPU temperature automatically")
+    }
+}
+
+private struct HoldRow: View {
+    @Bindable var model: FanModel
+
+    var body: some View {
+        HStack(spacing: 8) {
+            HoldLabel(model: model)
+                .frame(width: 38, alignment: .leading)
+            Picker("", selection: $model.holdSeconds) {
+                Text("Off").tag(0)
+                Text("30s").tag(30)
+                Text("1m").tag(60)
+                Text("2m").tag(120)
+                Text("5m").tag(300)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .onChange(of: model.holdSeconds) { _, _ in
+                if model.mode == .manual { model.applyKnob() }
+            }
+        }
+        .disabled(!model.canWrite || model.mode != .manual)
+        .opacity(model.mode == .manual ? 1 : 0.4)
     }
 }
 
@@ -270,7 +354,7 @@ private struct HoldLabel: View {
     var model: FanModel
 
     var body: some View {
-        if model.holdDeadline != nil {
+        if model.holdRemaining > 0 {
             Text(model.countdown)
                 .font(.subheadline.monospacedDigit().weight(.medium))
                 .foregroundStyle(activeAccent)
@@ -284,33 +368,55 @@ private struct HoldLabel: View {
 // MARK: - Status
 
 private struct StatusSection: View {
-    var model: FanModel
+    @Bindable var model: FanModel
     @State private var hovering = false
+
+    private var watchdogBinding: Binding<Double?> {
+        Binding(get: { model.watchdogCelsius }, set: { model.setWatchdog($0) })
+    }
+
+    private var loginBinding: Binding<Bool> {
+        Binding(get: { model.launchAtLogin }, set: { model.launchAtLogin = $0 })
+    }
 
     var body: some View {
         HStack(spacing: 6) {
             // Generous hit area (a bare 7 pt circle is nearly impossible to
             // hover). The status text reveals INSTANTLY on hover — the system
-            // .help() tooltip needs ~2 s of stationary cursor and reads as
-            // "not working".
+            // .help() tooltip needs ~2 s of stationary cursor.
             Circle()
                 .fill(model.canWrite ? Color.green : Color.orange)
                 .frame(width: 7, height: 7)
                 .frame(width: 20, height: 20)
                 .contentShape(Rectangle())
                 .onHover { hovering = $0 }
-            // "setup needed" is always visible; the healthy state only on hover.
             Text(model.canWrite ? "helper connected — fan control available"
-                                : "helper not installed — run “sudo make install”")
+                                : "helper not installed — see the README")
                 .font(.caption2).foregroundStyle(.secondary)
                 .lineLimit(1).minimumScaleFactor(0.8)
                 .opacity(model.canWrite && !hovering ? 0 : 1)
                 .animation(.easeOut(duration: 0.15), value: hovering)
             Spacer()
-            Button("Quit") { NSApp.terminate(nil) }
-                .buttonStyle(.plain)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+
+            Menu {
+                Toggle("Open at login", isOn: loginBinding)
+                if model.daemonPresent {
+                    Picker("Thermal watchdog", selection: watchdogBinding) {
+                        Text("Off").tag(Double?.none)
+                        Text("90 °C").tag(Double?.some(90))
+                        Text("95 °C").tag(Double?.some(95))
+                        Text("100 °C").tag(Double?.some(100))
+                    }
+                }
+                Divider()
+                Button("Quit fanknob") { NSApp.terminate(nil) }
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Settings")
         }
     }
 }

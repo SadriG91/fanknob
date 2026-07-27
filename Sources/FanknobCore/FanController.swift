@@ -64,26 +64,60 @@ public final class FanController {
         return Snapshot(fans: fans, temps: temps)
     }
 
-    /// Set all fans to a knob percentage, optionally with a timed auto-revert.
+    /// Set fans to a knob percentage, optionally one fan and/or with a timed
+    /// auto-revert. `fan: nil` means every fan.
     @discardableResult
-    public func setKnob(_ pct: Double, holdSeconds: Int = 0) -> Bool {
-        if geteuid() == 0 {
-            for i in 0..<fanCount(smc) { _ = try? setFanKnob(smc, i, pct: pct) }
+    public func setKnob(_ pct: Double, fan: Int? = nil, holdSeconds: Int = 0) -> Bool {
+        if geteuid() == 0 && !daemonReachable() {
+            // Direct write; the daemon isn't there to keep any curve running.
+            let targets = fan.map { [$0] } ?? Array(0..<fanCount(smc))
+            for i in targets { _ = try? setFanKnob(smc, i, pct: pct) }
             return true
         }
-        let cmd = holdSeconds > 0 ? "set \(Int(pct)) \(holdSeconds)" : "set \(Int(pct))"
+        var cmd = fan.map { "setfan \($0) \(Int(pct))" } ?? "set \(Int(pct))"
+        if holdSeconds > 0 { cmd += " \(holdSeconds)" }
         if case .ok = sendToDaemon(cmd) { return true }
         return false
     }
 
-    /// Return all fans to automatic control.
+    /// Hand the fans to a temperature curve. Requires the daemon — it's what
+    /// evaluates the curve over time.
+    @discardableResult
+    public func setPreset(_ preset: CurvePreset) -> Bool {
+        if case .ok = sendToDaemon("preset \(preset.rawValue)") { return true }
+        return false
+    }
+
+    @discardableResult
+    public func setCurve(_ curve: FanCurve) -> Bool {
+        if case .ok = sendToDaemon("curve \(curve.wireFormat)") { return true }
+        return false
+    }
+
+    /// Temperature above which the daemon returns the fans to the firmware.
+    /// nil disables the watchdog.
+    @discardableResult
+    public func setWatchdog(_ celsius: Double?) -> Bool {
+        let arg = celsius.map { String(Int($0)) } ?? "off"
+        if case .ok = sendToDaemon("watchdog \(arg)") { return true }
+        return false
+    }
+
+    /// What the daemon is currently doing (nil if it isn't running).
+    public func daemonState() -> DaemonState? {
+        guard case .ok(let reply) = sendToDaemon("state") else { return nil }
+        return DaemonState.decode(reply)
+    }
+
+    /// Return all fans to automatic control. Prefers the daemon even when
+    /// root: a direct write wouldn't stop a curve the daemon is driving.
     @discardableResult
     public func auto() -> Bool {
+        if case .ok = sendToDaemon("auto") { return true }
         if geteuid() == 0 {
             for i in 0..<fanCount(smc) { try? setFanAuto(smc, i) }
             return true
         }
-        if case .ok = sendToDaemon("auto") { return true }
         return false
     }
 }
