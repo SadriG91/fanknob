@@ -43,6 +43,12 @@ enum UIMode: String, CaseIterable {
     case auto, manual, curve
 }
 
+/// What a per-fan badge should say.
+enum FanBadge: String {
+    case auto = "AUTO", manual = "MANUAL", curve = "CURVE"
+    var overridden: Bool { self != .auto }
+}
+
 @Observable
 final class FanModel {
     // workQueue-confined (created there in init; serial queue orders all access)
@@ -165,6 +171,25 @@ final class FanModel {
     /// The user is overriding the firmware (manual or curve).
     var overriding: Bool { mode != .auto }
 
+    /// True while a command is on its way to the hardware. The SMC reports the
+    /// OLD fan mode for tens of ms after a write, so anything derived from
+    /// `Fan.managed` has to ride that out.
+    private var settling: Bool { pendingMode != nil || writesInFlight > 0 }
+
+    /// What's actually driving a fan.
+    ///
+    /// Deliberately resolved from the app's mode, not from `Fan.managed`
+    /// alone: the SMC can't tell a curve from a fixed speed (both are just
+    /// "managed"), and it lags every write. Reading the flag directly made the
+    /// badges flash a bogus MANUAL on the way from CURVE to AUTO.
+    func badge(for fan: Fan) -> FanBadge {
+        switch mode {
+        case .auto:   return .auto      // the daemon releases every fan at once
+        case .curve:  return .curve     // …and drives every fan at once
+        case .manual: return (fan.managed || settling) ? .manual : .auto
+        }
+    }
+
     var countdown: String {
         String(format: "%d:%02d", holdRemaining / 60, holdRemaining % 60)
     }
@@ -231,9 +256,19 @@ final class FanModel {
         if let hw = snap.fans.first?.knob.rounded(), hardwareKnob != hw { hardwareKnob = hw }
 
         // Clear the intent guard once reality agrees (or it times out).
+        //
+        // "Reality" is BOTH the daemon and the hardware: the daemon answers
+        // instantly, but the SMC's per-fan `managed` flag lags a beat behind
+        // it. Clearing on the daemon alone let the badges fall back to a stale
+        // flag for one poll and flash the previous mode.
         if let want = pendingMode {
             let actual = observedMode(snap: snap, state: state)
-            if actual == want || Date() >= pendingModeUntil { pendingMode = nil }
+            let fansAgree = want == .auto
+                ? snap.fans.allSatisfy { !$0.managed }
+                : snap.fans.contains { $0.managed }
+            if (actual == want && fansAgree) || Date() >= pendingModeUntil {
+                pendingMode = nil
+            }
         }
 
         guard !editing, writesInFlight == 0, pendingMode == nil else { return }

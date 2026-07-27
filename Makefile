@@ -30,6 +30,7 @@ test:
 ui-test:
 	swiftc -O scripts/click.swift -o /tmp/fanknob-click
 	python3 scripts/toggle-acceptance.py
+	python3 scripts/badge-acceptance.py
 
 # Assemble a double-clickable menu-bar .app around the built binary.
 # (assets/AppIcon.icns is generated from assets/fanknob_logo.png by

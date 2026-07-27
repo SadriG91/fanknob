@@ -51,23 +51,18 @@ struct GaugeBar: View {
     }
 }
 
-/// Per-fan badge. The SMC only reports "managed", so a curve looks identical
-/// to a fixed speed down there — the app's mode is what distinguishes them.
+/// Per-fan badge. See `FanModel.badge(for:)` for why the label comes from the
+/// app's mode rather than the SMC's `managed` flag.
 struct ModeBadge: View {
-    var managed: Bool
-    var mode: UIMode
-
-    private var label: String {
-        guard managed else { return "AUTO" }
-        return mode == .curve ? "CURVE" : "MANUAL"
-    }
+    var badge: FanBadge
 
     var body: some View {
-        Text(label)
+        let tint = badge.overridden ? activeAccent : Color.secondary
+        Text(badge.rawValue)
             .font(.system(size: 9, weight: .semibold))
-            .foregroundStyle(managed ? activeAccent : Color.secondary)
+            .foregroundStyle(tint)
             .padding(.horizontal, 6).padding(.vertical, 2)
-            .background((managed ? activeAccent : Color.secondary).opacity(0.14), in: Capsule())
+            .background(tint.opacity(0.14), in: Capsule())
             // Fixed slot so the gauge next to it doesn't resize when the
             // label changes length.
             .frame(width: 56, alignment: .trailing)
@@ -268,15 +263,16 @@ private struct FansSection: View {
     var body: some View {
         VStack(spacing: 10) {
             ForEach(model.fans, id: \.index) { f in
+                let badge = model.badge(for: f)
                 HStack(spacing: 10) {
                     Text("Fan \(f.index)").font(.callout).foregroundStyle(.secondary)
                         .frame(width: 44, alignment: .leading)
                     GaugeBar(value: f.max > f.min ? (f.actual - f.min) / (f.max - f.min) : 0,
-                             tint: f.managed ? activeAccent : .secondary)
+                             tint: badge.overridden ? activeAccent : .secondary)
                     Text("\(Int(f.actual.rounded()))")
                         .font(.callout.monospacedDigit())
                         .frame(width: 46, alignment: .trailing)
-                    ModeBadge(managed: f.managed, mode: model.mode)
+                    ModeBadge(badge: badge)
                 }
             }
         }
@@ -319,13 +315,6 @@ private struct ControlSection: View {
 private struct SpeedControl: View {
     @Bindable var model: FanModel
 
-    /// Only manual mode writes back; in auto/curve the slider is a live
-    /// readout of what the firmware or the curve is doing.
-    private var sliderBinding: Binding<Double> {
-        Binding(get: { model.displayKnob },
-                set: { if model.mode == .manual { model.knob = $0 } })
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
@@ -353,18 +342,60 @@ private struct SpeedControl: View {
                     PerFanSlider(model: model, index: fan.index)
                 }
             } else {
-                Slider(value: sliderBinding, in: 0...100) { editing in
-                    model.editing = editing
-                    if !editing { model.applyKnob() }
-                }
-                .onChange(of: model.knob) { _, _ in model.liveApply() }
-                .tint(model.mode == .manual ? activeAccent : Color.secondary)
-                // Interactive only in manual — elsewhere it's a live gauge, so
-                // a poll landing mid-click can't cancel anything.
-                .disabled(!model.canWrite || model.mode != .manual)
-                .help(model.mode == .manual ? ""
-                      : "Switch to Manual to set the speed yourself")
+                SmoothSlider(model: model)
             }
+        }
+    }
+}
+
+/// The main speed slider, with the value eased by hand.
+///
+/// SwiftUI's implicit `.animation(_:value:)` does not animate a Slider's thumb
+/// on macOS — measured: even a 2.5 s animation snapped straight to the target.
+/// So the position is integrated frame-by-frame toward whatever the mode is
+/// asking for, which makes Auto↔Curve transitions glide instead of jump.
+///
+/// The timeline is paused unless something is actually moving, and never runs
+/// in manual mode: re-rendering an interactive control at 60 fps is exactly
+/// what made earlier controls swallow clicks.
+private struct SmoothSlider: View {
+    @Bindable var model: FanModel
+    @State private var shown = 0.0
+    @State private var lastTick: Date?
+
+    private var settled: Bool { abs(model.displayKnob - shown) < 0.1 }
+
+    private var binding: Binding<Double> {
+        Binding(get: { model.mode == .manual ? model.knob : shown },
+                set: { if model.mode == .manual { model.knob = $0; shown = $0 } })
+    }
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0,
+                                paused: !model.popoverShown || model.editing
+                                        || model.mode == .manual || settled)) { context in
+            Slider(value: binding, in: 0...100) { editing in
+                model.editing = editing
+                if !editing { model.applyKnob() }
+            }
+            .onChange(of: model.knob) { _, _ in model.liveApply() }
+            .onChange(of: context.date) { _, now in
+                let dt = (lastTick.map { now.timeIntervalSince($0) } ?? 0).clamped(0, 0.1)
+                lastTick = now
+                guard model.mode != .manual, !model.editing else {
+                    shown = model.knob
+                    return
+                }
+                let target = model.displayKnob
+                // Exponential approach: ~0.12 s time constant, settles in ~0.4 s.
+                shown += (target - shown) * (1 - exp(-dt * 8))
+                if abs(target - shown) < 0.1 { shown = target }
+            }
+            .tint(model.mode == .manual ? activeAccent : Color.secondary)
+            // Interactive only in manual — elsewhere it's a live gauge, so a
+            // poll landing mid-click can't cancel anything.
+            .disabled(!model.canWrite || model.mode != .manual)
+            .help(model.mode == .manual ? "" : "Switch to Manual to set the speed yourself")
         }
     }
 }
