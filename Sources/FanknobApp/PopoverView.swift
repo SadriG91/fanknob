@@ -30,6 +30,11 @@ func tempColor(_ c: Double) -> Color {
 /// accent color, so it stays tasteful and neutral. Everything else is greyscale.
 let activeAccent = Color.accentColor
 
+/// Shared row metrics, so temperature and fan labels (and the gauges after
+/// them) line up in one column down the whole panel.
+let disclosureGutter: CGFloat = 12
+let rowLabelWidth: CGFloat = 42
+
 /// A smooth, animated gauge bar (value is 0…1).
 struct GaugeBar: View {
     var value: Double
@@ -255,14 +260,18 @@ private struct TempsSection: View {
                 }
             } label: {
                 HStack(spacing: 10) {
-                    HStack(spacing: 3) {
+                    HStack(spacing: 0) {
                         Image(systemName: "chevron.right")
                             .font(.system(size: 8, weight: .semibold))
                             .foregroundStyle(.tertiary)
+                            // Square box FIRST, rotate inside it: rotating the
+                            // glyph itself shifts layout, because chevron.right
+                            // is taller than it is wide.
+                            .frame(width: disclosureGutter, height: disclosureGutter)
                             .rotationEffect(.degrees(isOpen ? 90 : 0))
                         Text(label).font(.callout).foregroundStyle(.secondary)
+                            .frame(width: rowLabelWidth, alignment: .leading)
                     }
-                    .frame(width: 46, alignment: .leading)
                     GaugeBar(value: value / 100, tint: tempColor(value))
                     Text("\(Int(value.rounded()))°")
                         .font(.callout.monospacedDigit().weight(.medium))
@@ -335,8 +344,11 @@ private struct FansSection: View {
             ForEach(model.fans, id: \.index) { f in
                 let badge = model.badge(for: f)
                 HStack(spacing: 10) {
+                    // Empty gutter matching the temperature rows' chevron, so
+                    // every label in the panel starts on the same x.
+                    Color.clear.frame(width: disclosureGutter, height: 1)
                     Text("Fan \(f.index)").font(.callout).foregroundStyle(.secondary)
-                        .frame(width: 44, alignment: .leading)
+                        .frame(width: rowLabelWidth, alignment: .leading)
                     GaugeBar(value: f.max > f.min ? (f.actual - f.min) / (f.max - f.min) : 0,
                              tint: badge.overridden ? activeAccent : .secondary)
                     Text("\(Int(f.actual.rounded()))")
