@@ -55,9 +55,7 @@ jobs:
           test -x build/Fanknob.app/Contents/MacOS/FanknobApp
           test -f build/Fanknob.app/Contents/Resources/AppIcon.icns
 
-      # The package is what users actually install, so a broken payload layout
-      # should fail here rather than at release time. Unsigned is fine — the
-      # signing half needs secrets that pull requests can't have.
+      # Unsigned: the signing half needs secrets pull requests can't have.
       - name: Build the installer package (unsigned)
         run: make pkg
 
@@ -66,8 +64,6 @@ jobs:
           VERSION=$(make -s print-version)
           PKG="build/Fanknob-$VERSION.pkg"
           test -f "$PKG"
-          # Not named `path`: that's tied to PATH in zsh, and this snippet gets
-          # copy-pasted into terminals.
           for entry in ./usr/local/bin/fanknob \
                        ./usr/local/bin/fanknobd \
                        ./Library/LaunchDaemons/com.fanknob.daemon.plist \
@@ -75,7 +71,16 @@ jobs:
             pkgutil --payload-files "$PKG" | grep -qx "$entry" || {
               echo "::error::$entry missing from the package payload"; exit 1; }
           done
-          # The bundle must carry the version the package claims.
+
           STAMPED=$(plutil -extract CFBundleShortVersionString raw build/Fanknob.app/Contents/Info.plist)
           test "$STAMPED" = "$VERSION" || {
             echo "::error::bundle says $STAMPED, package says $VERSION"; exit 1; }
+
+          # Relocatable bundles let Installer honour a LaunchServices
+          # registration and install over some other copy of Fanknob.app,
+          # leaving /Applications empty. Shipped that way in 1.4.0; the payload
+          # checks above passed the whole time.
+          ( cd "$RUNNER_TEMP" && rm -rf pkginfo && mkdir pkginfo && cd pkginfo \
+            && xar -xf "$GITHUB_WORKSPACE/$PKG" component.pkg/PackageInfo )
+          grep -q 'relocatable="false"' "$RUNNER_TEMP/pkginfo/component.pkg/PackageInfo" || {
+            echo "::error::app bundle is relocatable — it may not install to /Applications"; exit 1; }

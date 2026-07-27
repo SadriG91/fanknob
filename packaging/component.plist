@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Component definition for the app bundle in the payload.
+
+  pkgbuild infers .app bundles as RELOCATABLE by default, which emits a
+  <relocate> element into PackageInfo. Installer then asks LaunchServices where
+  com.fanknob.app already lives and installs there instead of the payload path —
+  so on any machine that has ever opened a copy of Fanknob.app from somewhere
+  else (a build directory, ~/Downloads), the upgrade silently lands in that
+  location and /Applications is left empty.
+
+  BundleIsRelocatable=false pins the component to Applications/Fanknob.app.
+  Passed to pkgbuild via --component-plist; kept as a checked-in file rather
+  than generated with --analyze so the flags are reviewable in diffs.
+-->
+<plist version="1.0">
+<array>
+	<dict>
+		<key>BundleHasStrictIdentifier</key>
+		<true/>
+		<key>BundleIsRelocatable</key>
+		<false/>
+		<key>BundleIsVersionChecked</key>
+		<true/>
+		<key>BundleOverwriteAction</key>
+		<string>upgrade</string>
+		<key>RootRelativeBundlePath</key>
+		<string>Applications/Fanknob.app</string>
+	</dict>
+</array>
+</plist>

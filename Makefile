@@ -90,7 +90,8 @@ run-app: app
 # pkgbuild/productbuild are invoked identically either way — only the payload
 # differs (signed binaries or not), so the recipe lives in one place.
 define build_product
-	pkgbuild --root $(PKGROOT) --scripts packaging/scripts \
+	pkgbuild --root $(PKGROOT) --component-plist packaging/component.plist \
+	         --scripts packaging/scripts \
 	         --identifier $(PKG_ID) --version $(VERSION) \
 	         --ownership recommended --install-location / build/component.pkg
 	productbuild --distribution packaging/distribution.xml \
