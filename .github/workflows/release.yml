@@ -1,8 +1,5 @@
-# Release pipeline: push a v* tag and this builds, signs, notarizes and
-# publishes the installer package, then points the Homebrew cask at it.
-#
-# Signing and notarization run off repository secrets; the job fails early with
-# a clear message if any are missing.
+# Release pipeline: push a v* tag to build, sign, notarize and publish the
+# installer package, then point the Homebrew cask at it.
 name: Release
 
 on:
@@ -15,25 +12,27 @@ permissions:
 jobs:
   release:
     # Newest SDK: an app linked against an older one gets the legacy
-    # compatibility appearance on newer systems. The deployment target stays
-    # macOS 15, enforced by packaging/distribution.xml.
+    # compatibility appearance. Deployment target stays macOS 15.
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v7
         with:
-          # CFBundleVersion is the commit count, which a shallow clone would
-          # report as 1 — and a bundle version that goes backwards breaks
-          # Launch Services' idea of which copy is newer.
-          fetch-depth: 0
+          fetch-depth: 0   # CFBundleVersion is the commit count
 
       - name: Check the required secrets are present
         env:
-          SECRETS: ${{ toJSON(secrets) }}
+          DEVID_APP_P12: ${{ secrets.DEVID_APP_P12 }}
+          DEVID_INSTALLER_P12: ${{ secrets.DEVID_INSTALLER_P12 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
+          # Named individually — toJSON(secrets) exposes every repository secret.
           missing=""
           for name in DEVID_APP_P12 DEVID_INSTALLER_P12 P12_PASSWORD \
                       ASC_KEY_P8 ASC_KEY_ID ASC_ISSUER_ID; do
-            echo "$SECRETS" | jq -e --arg n "$name" '.[$n] // empty' >/dev/null || missing="$missing $name"
+            [ -n "${!name}" ] || missing="$missing $name"
           done
           if [ -n "$missing" ]; then
             echo "::error::missing repository secrets:$missing"
@@ -73,16 +72,13 @@ jobs:
           done
           rm -f "$RUNNER_TEMP"/app.p12 "$RUNNER_TEMP"/installer.p12
 
-          # A .p12 doesn't reliably carry the issuing intermediate, and without
-          # it codesign fails with "unable to build chain to self-signed root"
-          # / errSecInternalComponent — while security verify-cert still passes,
-          # which makes it look like a key problem rather than a chain one.
+          # A .p12 doesn't reliably carry its issuing intermediate, and without
+          # it codesign fails with "unable to build chain to self-signed root".
           curl -fsSL https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer \
             -o "$RUNNER_TEMP/DeveloperIDG2CA.cer"
           security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$KEYCHAIN"
 
-          # Without this, codesign blocks on a keychain access prompt that has
-          # nobody to answer it.
+          # Otherwise codesign blocks on a keychain prompt nobody can answer.
           security set-key-partition-list -S apple-tool:,apple: \
             -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
           security list-keychains -d user -s "$KEYCHAIN" \
@@ -94,7 +90,6 @@ jobs:
             | grep "Developer ID Installer" | head -1 | sed -E 's/.*"(.*)"/\1/')
           [ -n "$SIGN_APP" ] && [ -n "$SIGN_PKG" ] || {
             echo "::error::Developer ID identities not found in the imported keychain"; exit 1; }
-          echo "Signing as: $SIGN_APP / $SIGN_PKG"
 
           echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
           echo "SIGN_APP=$SIGN_APP" >> "$GITHUB_ENV"
@@ -117,8 +112,6 @@ jobs:
             --issuer "$ASC_ISSUER_ID" \
             --wait
           xcrun stapler staple "build/Fanknob-${VERSION}.pkg"
-          # Proves the artifact users will download actually passes Gatekeeper,
-          # rather than trusting that the previous steps did their job.
           spctl -a -vvv -t install "build/Fanknob-${VERSION}.pkg"
 
       - name: Publish the release
@@ -148,15 +141,12 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           VERSION="${TAG#v}"
           URL="https://github.com/SadriG91/fanknob/releases/download/${TAG}/Fanknob-${VERSION}.pkg"
-          # Downloaded to a file rather than piped into sha256sum: this shell
-          # doesn't set pipefail, so a 404 would sail past curl -f and publish
-          # the checksum of an empty stream.
+          # To a file, not piped into sha256sum: without pipefail a 404 would
+          # publish the checksum of an empty stream.
           curl -fsSL "$URL" -o package.pkg
           SHA=$(sha256sum package.pkg | cut -d' ' -f1)
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/SadriG91/homebrew-tap.git"
           cd homebrew-tap
-          # The cask builds its url from `version`, so these two lines are the
-          # entire bump.
           sed -i -E "s|version \"[^\"]+\"|version \"${VERSION}\"|" Casks/fanknob.rb
           sed -i -E "s|sha256 \"[^\"]+\"|sha256 \"${SHA}\"|" Casks/fanknob.rb
           git config user.name "github-actions[bot]"
