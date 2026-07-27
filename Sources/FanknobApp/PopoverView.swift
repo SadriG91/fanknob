@@ -66,18 +66,25 @@ struct ModeBadge: View {
 
 struct PopoverView: View {
     var model: FanModel
+    @State private var showingHelp = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HeaderSection(model: model)
-            Divider()
-            TempsSection(model: model)
-            Divider()
-            FansSection(model: model)
-            Divider()
-            ControlSection(model: model)
-            Divider()
-            StatusSection(model: model)
+        Group {
+            if showingHelp {
+                HelpView { showingHelp = false }
+            } else {
+                VStack(alignment: .leading, spacing: 14) {
+                    HeaderSection(model: model) { showingHelp = true }
+                    Divider()
+                    TempsSection(model: model)
+                    Divider()
+                    FansSection(model: model)
+                    Divider()
+                    ControlSection(model: model)
+                    Divider()
+                    StatusSection(model: model)
+                }
+            }
         }
         .padding(16)
         .frame(width: 320)
@@ -89,6 +96,7 @@ struct PopoverView: View {
 
 private struct HeaderSection: View {
     var model: FanModel
+    var onHelp: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
@@ -96,6 +104,13 @@ private struct HeaderSection: View {
                             tint: model.overriding ? activeAccent : .secondary,
                             paused: !model.popoverShown)
             Text("fanknob").font(.headline)
+            Button(action: onHelp) {
+                Image(systemName: "questionmark.circle")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("What do the modes do?")
             Spacer()
             if model.watchdogTripped {
                 Label("too hot — back to auto", systemImage: "exclamationmark.triangle.fill")
@@ -133,6 +148,71 @@ private struct SpinningFanIcon: View {
                     angle = (angle + dt * revsPerSecond * 360)
                         .truncatingRemainder(dividingBy: 360)
                 }
+        }
+    }
+}
+
+// MARK: - Help
+
+/// Replaces the panel contents rather than opening a nested popover — a
+/// MenuBarExtra window dismisses itself when it loses key status, so a real
+/// popover would take the whole thing down with it.
+private struct HelpView: View {
+    var onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Fan modes").font(.headline)
+                Spacer()
+                Button("Done", action: onClose)
+                    .buttonStyle(.plain)
+                    .font(.caption)
+                    .foregroundStyle(activeAccent)
+            }
+            Divider()
+
+            VStack(alignment: .leading, spacing: 12) {
+                row("a.circle", "Auto",
+                    "Your Mac's firmware controls the fans. This is the default, and the safest option.")
+                row("slider.horizontal.3", "Manual",
+                    "You pick a fixed speed and it stays there. The firmware is no longer adjusting for heat, so use Hold — or a curve — if you're leaving it on.")
+                row("chart.line.uptrend.xyaxis", "Curve",
+                    "Fan speed follows CPU temperature automatically. Quiet stays silent until it's hot, Turbo keeps things cold, Balanced sits between.")
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 12) {
+                row("timer", "Hold",
+                    "In Manual, return to Auto after 30 s – 5 min. The helper runs the timer, so it still happens if you close this window.")
+                row("exclamationmark.shield", "Thermal watchdog",
+                    "If it gets too hot while you're overriding, the fans go back to the firmware. Set the limit in the gear menu.")
+            }
+
+            Divider()
+
+            Text("Speeds are a percentage of each fan's own minimum–maximum range, not of its top speed. With two fans, switch Linked to Individual to control them separately.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func row(_ symbol: String, _ title: String, _ detail: String) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: symbol)
+                .font(.system(size: 12))
+                .foregroundStyle(activeAccent)
+                .frame(width: 16, alignment: .center)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.subheadline.weight(.semibold))
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }
