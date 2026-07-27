@@ -309,14 +309,19 @@ private struct SensorList: View {
                         }
                     }
                 }
-                .padding(.trailing, 2)
+                // Clearance for the overlay scrollbar, which would otherwise
+                // sit on top of the values.
+                .padding(.trailing, 14)
             }
             // A definite height: maxHeight alone lets a ScrollView collapse to
             // nothing inside a VStack. Grows with the list, capped so 54 CPU
             // sensors don't push the popover off screen.
             .frame(height: min(CGFloat(sensors.count) * 14 + 2, 132))
         }
-        .padding(.leading, 12)
+        // Inset on both sides so the detail reads as nested under its row
+        // rather than running the full width of the panel.
+        .padding(.leading, 16)
+        .padding(.trailing, 8)
     }
 }
 
