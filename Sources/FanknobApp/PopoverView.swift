@@ -227,11 +227,11 @@ private struct ControlSection: View {
 private struct SpeedControl: View {
     @Bindable var model: FanModel
 
-    /// In curve mode the slider is a read-only readout of what the curve is
-    /// asking for; in manual it's the setpoint the user drags.
+    /// Only manual mode writes back; in auto/curve the slider is a live
+    /// readout of what the firmware or the curve is doing.
     private var sliderBinding: Binding<Double> {
         Binding(get: { model.displayKnob },
-                set: { if model.mode != .curve { model.knob = $0 } })
+                set: { if model.mode == .manual { model.knob = $0 } })
     }
 
     var body: some View {
@@ -265,13 +265,15 @@ private struct SpeedControl: View {
             } else {
                 Slider(value: sliderBinding, in: 0...100) { editing in
                     model.editing = editing
-                    if editing { model.mode = .manual }   // grabbing = manual intent
-                    else { model.applyKnob() }
+                    if !editing { model.applyKnob() }
                 }
                 .onChange(of: model.knob) { _, _ in model.liveApply() }
                 .tint(model.mode == .manual ? activeAccent : Color.secondary)
-                .disabled(!model.canWrite || model.mode == .curve)
-                .help(model.mode == .curve ? "The curve is driving the fans" : "")
+                // Interactive only in manual — elsewhere it's a live gauge, so
+                // a poll landing mid-click can't cancel anything.
+                .disabled(!model.canWrite || model.mode != .manual)
+                .help(model.mode == .manual ? ""
+                      : "Switch to Manual to set the speed yourself")
             }
         }
     }

@@ -80,7 +80,11 @@ final class FanModel {
     var popoverShown = false
 
     var mode: UIMode = .auto
+    /// The user's manual setpoint (only meaningful in manual mode).
     var knob: Double = 0
+    /// What the fans are actually doing, from the SMC. Drives the slider as a
+    /// live readout in auto/curve so switching to manual never jumps.
+    var hardwareKnob: Double = 0
     /// Per-fan setpoints for unlinked manual control.
     var fanKnobs: [Int: Double] = [:]
     var linkFans = true
@@ -165,10 +169,15 @@ final class FanModel {
         String(format: "%d:%02d", holdRemaining / 60, holdRemaining % 60)
     }
 
-    /// Effective knob to display: the curve's output in curve mode, else the
-    /// slider position.
+    /// What the slider shows. In manual it's the user's setpoint; otherwise
+    /// it's a live readout of what the curve or the firmware is doing — so
+    /// entering manual can take over from exactly that position.
     var displayKnob: Double {
-        mode == .curve ? (curveKnob ?? 0) : knob
+        switch mode {
+        case .manual: return knob
+        case .curve:  return curveKnob ?? hardwareKnob
+        case .auto:   return hardwareKnob
+        }
     }
 
     /// Spin rate for the popover's fan icon: gentle at idle, brisk at full
@@ -215,6 +224,11 @@ final class FanModel {
 
         let shownTemp = (snap.temps.cpu ?? snap.temps.gpu).map { Int($0.rounded()) }
         if menuTemp != shownTemp { menuTemp = shownTemp }
+
+        // Live hardware position. Safe to update every poll: the slider is a
+        // read-only gauge unless we're in manual, so this can't cancel a click
+        // (the lesson from the sticky-toggle bug).
+        if let hw = snap.fans.first?.knob.rounded(), hardwareKnob != hw { hardwareKnob = hw }
 
         // Clear the intent guard once reality agrees (or it times out).
         if let want = pendingMode {
@@ -280,9 +294,15 @@ final class FanModel {
     func setMode(_ m: UIMode) {
         guard canWrite, m != mode else { return }
         switch m {
-        case .auto:   setAuto()
-        case .manual: applyKnob()
-        case .curve:  selectPreset(preset)
+        case .auto:
+            setAuto()
+        case .manual:
+            // Take over from whatever the slider is already showing (the
+            // firmware's speed, or the curve's output) so nothing jumps.
+            knob = displayKnob
+            applyKnob()
+        case .curve:
+            selectPreset(preset)
         }
     }
 
