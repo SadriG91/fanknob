@@ -1,10 +1,8 @@
-# Release pipeline: push a v* tag and this (1) builds + tests, (2) creates the
-# GitHub release, (3) bumps the Homebrew tap formula to the new version — so
-# `brew upgrade fanknob` picks it up with zero manual steps.
+# Release pipeline: push a v* tag and this builds, signs, notarizes and
+# publishes the installer package, then points the Homebrew cask at it.
 #
-# The tap bump needs a TAP_PUSH_TOKEN repo secret: a fine-grained PAT with
-# Contents: read/write on SadriG91/homebrew-tap. Without it, that step is
-# skipped and the formula must be bumped by hand.
+# Signing and notarization run off repository secrets; the job fails early with
+# a clear message if any are missing.
 name: Release
 
 on:
@@ -16,42 +14,148 @@ permissions:
 
 jobs:
   release:
-    runs-on: macos-15
+    # Newest SDK: an app linked against an older one gets the legacy
+    # compatibility appearance on newer systems. The deployment target stays
+    # macOS 15, enforced by packaging/distribution.xml.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v7
+        with:
+          # CFBundleVersion is the commit count, which a shallow clone would
+          # report as 1 — and a bundle version that goes backwards breaks
+          # Launch Services' idea of which copy is newer.
+          fetch-depth: 0
 
-      - name: Build (release)
-        run: swift build -c release
+      - name: Check the required secrets are present
+        env:
+          SECRETS: ${{ toJSON(secrets) }}
+        run: |
+          missing=""
+          for name in DEVID_APP_P12 DEVID_INSTALLER_P12 P12_PASSWORD \
+                      ASC_KEY_P8 ASC_KEY_ID ASC_ISSUER_ID; do
+            echo "$SECRETS" | jq -e --arg n "$name" '.[$n] // empty' >/dev/null || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::missing repository secrets:$missing"
+            exit 1
+          fi
+
+      - name: Check the tag agrees with Version.swift
+        run: |
+          VERSION=$(sed -n 's/.*fanknobVersion = "\(.*\)".*/\1/p' Sources/FanknobCore/Version.swift)
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$VERSION" != "$TAG" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} disagrees with Version.swift (${VERSION})"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Unit tests
         run: swift test
 
-      - name: Create GitHub release (if not already created)
+      - name: Import Developer ID certificates
+        env:
+          DEVID_APP_P12: ${{ secrets.DEVID_APP_P12 }}
+          DEVID_INSTALLER_P12: ${{ secrets.DEVID_INSTALLER_P12 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/fanknob-signing.keychain-db"
+          KEYCHAIN_PASSWORD=$(uuidgen)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+
+          echo "$DEVID_APP_P12"       | base64 --decode > "$RUNNER_TEMP/app.p12"
+          echo "$DEVID_INSTALLER_P12" | base64 --decode > "$RUNNER_TEMP/installer.p12"
+          for f in app installer; do
+            security import "$RUNNER_TEMP/$f.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" \
+              -T /usr/bin/codesign -T /usr/bin/productsign
+          done
+          rm -f "$RUNNER_TEMP"/app.p12 "$RUNNER_TEMP"/installer.p12
+
+          # Without this, codesign blocks on a keychain access prompt that has
+          # nobody to answer it.
+          security set-key-partition-list -S apple-tool:,apple: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" \
+            $(security list-keychains -d user | tr -d '"')
+
+          SIGN_APP=$(security find-identity -v -p codesigning "$KEYCHAIN" \
+            | grep "Developer ID Application" | head -1 | sed -E 's/.*"(.*)"/\1/')
+          SIGN_PKG=$(security find-identity -v "$KEYCHAIN" \
+            | grep "Developer ID Installer" | head -1 | sed -E 's/.*"(.*)"/\1/')
+          [ -n "$SIGN_APP" ] && [ -n "$SIGN_PKG" ] || {
+            echo "::error::Developer ID identities not found in the imported keychain"; exit 1; }
+          echo "Signing as: $SIGN_APP / $SIGN_PKG"
+
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+          echo "SIGN_APP=$SIGN_APP" >> "$GITHUB_ENV"
+          echo "SIGN_PKG=$SIGN_PKG" >> "$GITHUB_ENV"
+
+      - name: Build and sign the package
+        run: make pkg-signed SIGN_APP="$SIGN_APP" SIGN_PKG="$SIGN_PKG"
+
+      - name: Notarize and staple
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          echo "$ASC_KEY_P8" | base64 --decode > "$RUNNER_TEMP/asc.p8"
+          trap 'rm -f "$RUNNER_TEMP/asc.p8"' EXIT
+          xcrun notarytool submit "build/Fanknob-${VERSION}.pkg" \
+            --key "$RUNNER_TEMP/asc.p8" \
+            --key-id "$ASC_KEY_ID" \
+            --issuer "$ASC_ISSUER_ID" \
+            --wait
+          xcrun stapler staple "build/Fanknob-${VERSION}.pkg"
+          # Proves the artifact users will download actually passes Gatekeeper,
+          # rather than trusting that the previous steps did their job.
+          spctl -a -vvv -t install "build/Fanknob-${VERSION}.pkg"
+
+      - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes || echo "release already exists"
+        run: |
+          cd build
+          shasum -a 256 "Fanknob-${VERSION}.pkg" > "Fanknob-${VERSION}.pkg.sha256"
+          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes \
+            || echo "release already exists"
+          gh release upload "$GITHUB_REF_NAME" --clobber \
+            "Fanknob-${VERSION}.pkg" "Fanknob-${VERSION}.pkg.sha256"
 
-  bump-tap:
+      - name: Remove the signing keychain
+        if: always()
+        run: security delete-keychain "$KEYCHAIN" 2>/dev/null || true
+
+  bump-cask:
     needs: release
     runs-on: ubuntu-latest
     env:
       TAP_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
     steps:
-      - name: Bump formula in homebrew-tap
+      - name: Point the cask at the new package
         if: env.TAP_TOKEN != ''
         run: |
           TAG="${GITHUB_REF_NAME}"
-          URL="https://github.com/SadriG91/fanknob/archive/refs/tags/${TAG}.tar.gz"
-          SHA=$(curl -sL "$URL" | sha256sum | cut -d' ' -f1)
+          VERSION="${TAG#v}"
+          URL="https://github.com/SadriG91/fanknob/releases/download/${TAG}/Fanknob-${VERSION}.pkg"
+          # Downloaded to a file rather than piped into sha256sum: this shell
+          # doesn't set pipefail, so a 404 would sail past curl -f and publish
+          # the checksum of an empty stream.
+          curl -fsSL "$URL" -o package.pkg
+          SHA=$(sha256sum package.pkg | cut -d' ' -f1)
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/SadriG91/homebrew-tap.git"
           cd homebrew-tap
-          sed -i -E "s|url \"[^\"]+\"|url \"${URL}\"|" Formula/fanknob.rb
-          sed -i -E "s|sha256 \"[^\"]+\"|sha256 \"${SHA}\"|" Formula/fanknob.rb
+          # The cask builds its url from `version`, so these two lines are the
+          # entire bump.
+          sed -i -E "s|version \"[^\"]+\"|version \"${VERSION}\"|" Casks/fanknob.rb
+          sed -i -E "s|sha256 \"[^\"]+\"|sha256 \"${SHA}\"|" Casks/fanknob.rb
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -am "fanknob ${TAG}"
+          git commit -am "fanknob ${VERSION}"
           git push
 
       - name: Skipped notice
         if: env.TAP_TOKEN == ''
-        run: echo "TAP_PUSH_TOKEN not configured — bump Formula/fanknob.rb in the tap manually."
+        run: echo "TAP_PUSH_TOKEN not configured — bump Casks/fanknob.rb in the tap by hand."

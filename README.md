@@ -40,28 +40,49 @@ app/Info.plist   app bundle metadata
 com.fanknob.daemon.plist
 ```
 
-## Install with Homebrew (recommended)
+## Install
+
+Two ways in, both a single step. Fan control works the moment either finishes —
+the installer loads the root helper daemon for you.
+
+**Homebrew:**
 
 ```sh
-brew install SadriG91/tap/fanknob
-
-# fan control needs the root helper daemon (one time):
-sudo brew services start fanknob
-
-# optional: put the menu-bar app in /Applications
-cp -R "$(brew --prefix)/opt/fanknob/Fanknob.app" /Applications/
+brew install --cask SadriG91/tap/fanknob
 ```
 
-Installs a prebuilt bottle in seconds — **no Xcode required**. If no bottle
-matches your system, Homebrew falls back to building from source (which needs
-Xcode 16+).
+**Or download** the signed `Fanknob-<version>.pkg` from
+[Releases](https://github.com/SadriG91/fanknob/releases/latest) and double-click.
+
+It installs:
+
+| Path | |
+|---|---|
+| `/Applications/Fanknob.app` | the menu-bar app |
+| `/usr/local/bin/fanknob` | the CLI and TUI |
+| `/usr/local/bin/fanknobd` | the root helper daemon |
+| `/Library/LaunchDaemons/com.fanknob.daemon.plist` | loads the daemon at boot |
+
+Apple Silicon and macOS 15+ only — the installer refuses anything else up front
+rather than laying down binaries that can't run.
 
 ### Updating
 
 ```sh
-brew update && brew upgrade fanknob
-sudo brew services restart fanknob
+brew upgrade --cask fanknob
 ```
+
+Or install a newer `.pkg` over the top; it replaces the running daemon cleanly.
+
+### Uninstalling
+
+```sh
+brew uninstall --cask fanknob
+```
+
+The daemon hands the fans back to the firmware as it's stopped, so removing
+fanknob can't strand them at a fixed speed. Add `--zap` to also remove the saved
+configuration in `/Library/Application Support/fanknob`.
 
 ## Build from source
 
@@ -72,7 +93,8 @@ make app             # build everything + assemble Fanknob.app
 sudo make install    # install CLI + daemon + app, load the daemon
 ```
 
-> Use ONE install method — Homebrew or `make install`, not both.
+> Use ONE install method — the package or `make install`, not both. Each target
+> refuses to run when the other is already in place.
 
 All targets:
 
@@ -80,6 +102,9 @@ All targets:
 make                 # build everything (release)
 make app             # assemble build/Fanknob.app
 make run-app         # build + launch the menu-bar app
+make pkg             # unsigned installer .pkg, for local testing
+make pkg-signed      # Developer ID signed .pkg (needs certs; CI does this)
+make notarize        # notarize + staple the signed .pkg
 sudo make install    # install CLI + daemon + app to the system, load the daemon
 sudo make uninstall
 ```
@@ -212,6 +237,16 @@ make ui-test   # UI acceptance: real synthetic clicks on the app's Auto/Manual t
 old fan mode for tens of ms after a write; the app must not let a stale poll
 yank the toggle back). It drives real CGEvent clicks, so it needs the app
 running, the daemon installed, and Accessibility permission for the terminal.
+
+## Releasing
+
+The version lives in exactly one place, `Sources/FanknobCore/Version.swift`.
+Bump it, commit, then push a matching `vX.Y.Z` tag — the release workflow refuses
+to build a tag that disagrees with it. CI takes it from there: it builds and
+publishes the `.pkg`, then repoints the cask. No manual steps.
+
+`CFBundleVersion` is the commit count rather than the marketing version, because
+it has to increase monotonically and macOS reads `13` as newer than `1.4.0`.
 
 ## Important
 

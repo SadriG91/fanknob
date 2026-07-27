@@ -148,8 +148,9 @@ func control(_ command: String, _ smc: SMC, fallback: ((SMC) -> Void)?) {
         } else {
             print("""
             fanknob daemon not running, and this isn't root.
-            Install it:  sudo brew services start fanknob   (Homebrew)
-                         sudo make install                  (from source)
+            The installer loads it for you; if it was stopped, start it with:
+              sudo launchctl bootstrap system /Library/LaunchDaemons/com.fanknob.daemon.plist
+            Not installed yet?  brew install --cask SadriG91/tap/fanknob
             Or run this command with sudo.
             """)
         }
@@ -164,6 +165,7 @@ func usage() {
       fanknob tui                       live interactive dashboard
       fanknob temp                      list all temperature sensors
       fanknob keys [prefix]             dump SMC keys (default prefix 'F')
+      fanknob version                   the installed version
 
       fanknob set <0-100> [options]     fixed speed
             --fan <n>                   just that fan (default: all)
@@ -184,6 +186,13 @@ struct Fanknob {
     static func main() {
         let args = CommandLine.arguments
         guard args.count >= 2 else { usage(); exit(0) }
+
+        // Answered before the SMC is touched, so asking an install what it is
+        // still works on a machine where the SMC won't open.
+        if ["version", "--version", "-v"].contains(args[1]) {
+            print("fanknob \(fanknobVersion)")
+            exit(0)
+        }
 
         let smc = SMC()
         do { try smc.open() }

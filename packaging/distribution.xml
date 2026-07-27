@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Product definition for the fanknob installer.
+
+  hostArchitectures and allowed-os-versions make Installer refuse the package
+  up front on an Intel Mac or on macOS < 15, rather than cheerfully laying down
+  binaries that cannot run. The CLI and daemon are arm64-only (the SMC fan keys
+  this drives only exist on Apple Silicon) and Package.swift targets macOS 15.
+
+  customize="never" — there is nothing meaningful to opt out of: the app needs
+  the daemon, and the daemon is useless without something to drive it.
+-->
+<installer-gui-script minSpecVersion="2">
+    <title>Fanknob</title>
+    <options customize="never" hostArchitectures="arm64"/>
+
+    <volume-check>
+        <allowed-os-versions>
+            <os-version min="15.0"/>
+        </allowed-os-versions>
+    </volume-check>
+
+    <choices-outline>
+        <line choice="default">
+            <line choice="com.fanknob.pkg"/>
+        </line>
+    </choices-outline>
+    <choice id="default"/>
+    <choice id="com.fanknob.pkg" visible="false">
+        <pkg-ref id="com.fanknob.pkg"/>
+    </choice>
+
+    <!-- productbuild fills in the real version from component.pkg. -->
+    <pkg-ref id="com.fanknob.pkg" version="0" onConclusion="none">component.pkg</pkg-ref>
+</installer-gui-script>

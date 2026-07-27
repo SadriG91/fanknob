@@ -24,6 +24,10 @@ func log(_ s: String) {
 /// All SMC access, timers and state live on this one serial queue.
 let smcQueue = DispatchQueue(label: "com.fanknob.smc")
 
+/// Kept at file scope so ARC can't release the sources at their last use —
+/// they have to outlive `main`'s scope to keep firing.
+var signalSources: [DispatchSourceSignal] = []
+
 /// How often the curve/watchdog loop runs.
 let tickSeconds = 2
 
@@ -69,6 +73,21 @@ final class Controller {
             log("restored curve: \(preset?.rawValue ?? "custom")")
             applyCurve(curve, force: true)
         }
+    }
+
+    /// Hand the fans back to the firmware on the way out.
+    ///
+    /// This matters more than it looks. The SMC holds `FiMd = 1` until
+    /// something writes 0 back, so a daemon that simply exits leaves the fans
+    /// pinned at their last target with nothing left running to move them —
+    /// uninstalling mid-override would strand them there until a reboot.
+    ///
+    /// The persisted config is deliberately left alone: this is "we're going
+    /// away", not "the user asked for auto", and `restorePersistedMode()`
+    /// re-applies the override if we come back.
+    func shutdown() {
+        applyAuto()
+        log("returned the fans to the firmware")
     }
 
     // MARK: Sensing
@@ -270,7 +289,7 @@ struct Fanknobd {
         // retries let this instance take over automatically.
         guard acquireDaemonLock() != nil else {
             log("another fanknobd already holds \(fanknobdLockPath) — refusing to start")
-            log("keep ONE install: `sudo make uninstall` (manual) or `sudo brew services stop fanknob` (Homebrew)")
+            log("keep ONE install: `brew uninstall --cask fanknob`, or `sudo make uninstall` for a from-source copy")
             exit(1)
         }
 
@@ -285,6 +304,23 @@ struct Fanknobd {
                        repeating: .seconds(tickSeconds))
         timer.setEventHandler { controller.tick() }
         timer.resume()
+
+        // Give the fans back when launchd (or a terminal) stops us — see
+        // Controller.shutdown(). A dispatch signal source only *observes* the
+        // signal; the default disposition would still kill the process before
+        // the handler ran, so both signals have to be ignored first.
+        signal(SIGTERM, SIG_IGN)
+        signal(SIGINT, SIG_IGN)
+        signalSources = [SIGTERM, SIGINT].map { sig in
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: smcQueue)
+            source.setEventHandler {
+                controller.shutdown()
+                unlink(fanknobdSocketPath)
+                exit(0)
+            }
+            source.resume()
+            return source
+        }
 
         unlink(fanknobdSocketPath)
 

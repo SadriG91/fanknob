@@ -1,0 +1,44 @@
+#!/bin/sh
+# postinstall — run as root by Installer after the payload is written.
+#
+# This is the whole reason fanknob ships as a .pkg rather than a .dmg: the
+# installer is already root, so it can load the daemon itself and fan control
+# works the moment the install finishes. No "now open a terminal and run this".
+
+set -u
+
+PLIST=/Library/LaunchDaemons/com.fanknob.daemon.plist
+LABEL=com.fanknob.daemon
+SOCKET=/var/run/fanknobd.sock
+
+# bootout first so an upgrade replaces the running daemon instead of colliding
+# with it over the socket. The outgoing instance gets SIGTERM and hands the fans
+# back to the firmware; the new one restores the persisted mode as it starts.
+launchctl bootout "system/$LABEL" 2>/dev/null || true
+
+# A socket left behind by the outgoing daemon would make the readiness check
+# below pass without anything actually listening.
+rm -f "$SOCKET"
+
+if ! launchctl bootstrap system "$PLIST" 2>/dev/null; then
+    sleep 1   # launchd occasionally needs a beat before it will reuse a label
+    launchctl bootstrap system "$PLIST" || true
+fi
+
+# launchd accepting the job doesn't mean the daemon is alive — it can still exit
+# on startup, for instance if another fanknobd already holds the singleton lock.
+# The socket only appears once one has really bound it, so wait for that: better
+# to fail here than to hand over an install that looks fine until someone tries
+# to move a fan.
+i=0
+while [ "$i" -lt 20 ]; do
+    if [ -S "$SOCKET" ]; then
+        exit 0
+    fi
+    i=$((i + 1))
+    sleep 0.25
+done
+
+echo "fanknob: the daemon did not come up — fan control will not work." >&2
+echo "fanknob: check 'sudo launchctl print system/$LABEL' and /var/log/fanknobd.log" >&2
+exit 1
