@@ -32,8 +32,13 @@ let activeAccent = Color.accentColor
 
 /// Shared row metrics, so temperature and fan labels (and the gauges after
 /// them) line up in one column down the whole panel.
-let disclosureGutter: CGFloat = 12
+let disclosureGutter: CGFloat = 10
+let disclosureGap: CGFloat = 4
 let rowLabelWidth: CGFloat = 42
+/// The row labels are all capitals or digits, so their optical centre sits
+/// above the line box's geometric centre by about half a descender. Nudge the
+/// chevron up to match, or it reads as sitting low.
+let disclosureBaselineNudge: CGFloat = -1
 
 /// A smooth, animated gauge bar (value is 0…1).
 struct GaugeBar: View {
@@ -260,7 +265,7 @@ private struct TempsSection: View {
                 }
             } label: {
                 HStack(spacing: 10) {
-                    HStack(spacing: 0) {
+                    HStack(spacing: disclosureGap) {
                         Image(systemName: "chevron.right")
                             .font(.system(size: 8, weight: .semibold))
                             .foregroundStyle(.tertiary)
@@ -269,6 +274,7 @@ private struct TempsSection: View {
                             // is taller than it is wide.
                             .frame(width: disclosureGutter, height: disclosureGutter)
                             .rotationEffect(.degrees(isOpen ? 90 : 0))
+                            .offset(y: disclosureBaselineNudge)
                         Text(label).font(.callout).foregroundStyle(.secondary)
                             .frame(width: rowLabelWidth, alignment: .leading)
                     }
@@ -346,7 +352,7 @@ private struct FansSection: View {
                 HStack(spacing: 10) {
                     // Empty gutter matching the temperature rows' chevron, so
                     // every label in the panel starts on the same x.
-                    Color.clear.frame(width: disclosureGutter, height: 1)
+                    Color.clear.frame(width: disclosureGutter + disclosureGap, height: 1)
                     Text("Fan \(f.index)").font(.callout).foregroundStyle(.secondary)
                         .frame(width: rowLabelWidth, alignment: .leading)
                     GaugeBar(value: f.max > f.min ? (f.actual - f.min) / (f.max - f.min) : 0,
