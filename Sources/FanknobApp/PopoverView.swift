@@ -51,14 +51,26 @@ struct GaugeBar: View {
     }
 }
 
+/// Per-fan badge. The SMC only reports "managed", so a curve looks identical
+/// to a fixed speed down there — the app's mode is what distinguishes them.
 struct ModeBadge: View {
     var managed: Bool
+    var mode: UIMode
+
+    private var label: String {
+        guard managed else { return "AUTO" }
+        return mode == .curve ? "CURVE" : "MANUAL"
+    }
+
     var body: some View {
-        Text(managed ? "MANUAL" : "AUTO")
+        Text(label)
             .font(.system(size: 9, weight: .semibold))
             .foregroundStyle(managed ? activeAccent : Color.secondary)
             .padding(.horizontal, 6).padding(.vertical, 2)
             .background((managed ? activeAccent : Color.secondary).opacity(0.14), in: Capsule())
+            // Fixed slot so the gauge next to it doesn't resize when the
+            // label changes length.
+            .frame(width: 56, alignment: .trailing)
     }
 }
 
@@ -264,7 +276,7 @@ private struct FansSection: View {
                     Text("\(Int(f.actual.rounded()))")
                         .font(.callout.monospacedDigit())
                         .frame(width: 46, alignment: .trailing)
-                    ModeBadge(managed: f.managed)
+                    ModeBadge(managed: f.managed, mode: model.mode)
                 }
             }
         }
@@ -328,14 +340,12 @@ private struct SpeedControl: View {
                     .help("Control both fans together or separately")
                 }
                 Spacer()
-                switch model.mode {
-                case .auto:
-                    Text("auto").font(.subheadline.weight(.medium)).foregroundStyle(.secondary)
-                case .manual, .curve:
-                    Text("\(Int(model.displayKnob))%")
-                        .font(.subheadline.monospacedDigit().weight(.bold))
-                        .foregroundStyle(activeAccent)
-                }
+                // Always the percentage, so it agrees with the slider — greyed
+                // in auto, where it's a readout rather than a setting.
+                Text("\(Int(model.displayKnob))%")
+                    .font(.subheadline.monospacedDigit()
+                        .weight(model.mode == .auto ? .medium : .bold))
+                    .foregroundStyle(model.mode == .auto ? Color.secondary : activeAccent)
             }
 
             if model.mode == .manual && !model.linkFans {
