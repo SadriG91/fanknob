@@ -123,9 +123,18 @@ make shots
 ```
 
 That builds debug and runs `FanknobApp --render-shots docs/screenshots`, which
-hosts `PopoverView` in an offscreen window with fixture data and writes a light
-and a dark PNG for each shot at 2x. Re-run it whenever you change the popover,
-and commit the result.
+hosts `PopoverView` in an offscreen window with fixture data and writes, for
+both light and dark:
+
+- **stills** at 2x — the two popover shots and the menu-bar strip;
+- **the hero reel** (`reel-light.mp4` / `reel-dark.mp4`) plus a poster frame —
+  a ~10 s scripted tour through automatic, manual, a curve and back.
+
+Re-run it whenever you change the popover, and commit the result.
+
+The output is deterministic in content but not byte-for-byte: the header's fan
+icon spins, so it lands at a slightly different angle each run and a couple of
+PNGs will always show as modified. Nothing to chase.
 
 Two things about it are deliberate:
 
@@ -140,6 +149,17 @@ The renderer also pumps the run loop for a moment before snapshotting, because
 the speed slider eases its thumb toward the target on a frame timer instead of
 animating implicitly — snapshot too early and the thumb is still at zero while
 the label already reads the right percentage.
+
+The reel needs the same care for a different reason. The view's animations
+advance in real time no matter how fast we can capture, and a frame costs more
+than 1/30 s to grab. Stamping frames at a nominal 30 fps therefore played the
+app's own motion back about three times too fast. So the script, the view and
+the video all run off one clock: beats are driven by elapsed time and each
+frame is stamped with the moment it was actually taken. Playback is then
+exactly what happened, at whatever rate capture managed (currently ~25 fps).
+That is also why frames are rendered straight into the encoder's pixel buffer —
+going via a bitmap rep and a CGImage copied every frame three times and halved
+the achievable rate.
 
 ## Releasing
 
