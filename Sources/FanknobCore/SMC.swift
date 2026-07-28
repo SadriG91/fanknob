@@ -253,6 +253,16 @@ public struct Fan: Equatable {
     public let target: Double
     public let managed: Bool   // true = manual/forced
 
+    public init(index: Int, actual: Double, min: Double, max: Double,
+                target: Double, managed: Bool) {
+        self.index = index
+        self.actual = actual
+        self.min = min
+        self.max = max
+        self.target = target
+        self.managed = managed
+    }
+
     public var knob: Double {
         guard max > min else { return 0 }
         return ((target - min) / (max - min) * 100).clamped(0, 100)
@@ -297,6 +307,11 @@ public func setFanAuto(_ smc: SMC, _ i: Int) throws {
 public struct TempSensor {
     public let key: String
     public let celsius: Double
+
+    public init(key: String, celsius: Double) {
+        self.key = key
+        self.celsius = celsius
+    }
 }
 
 // Apple Silicon exposes many die/board temp sensors as 'T…' keys of type flt.

@@ -5,13 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>fanknob — fan control for Apple Silicon Macs</title>
-<meta name="description" content="Put your Mac's fans on a 0–100 knob, or hand them to a temperature curve. A native menu-bar app for Apple Silicon, with a CLI and terminal dashboard.">
+<meta name="description" content="Turn your Mac's fans down when you want quiet, or up when you're pushing it. A menu-bar app for Apple Silicon, with a CLI and a terminal dashboard.">
 
 <meta property="og:type" content="website">
 <meta property="og:title" content="fanknob — fan control for Apple Silicon Macs">
-<meta property="og:description" content="Put your Mac's fans on a 0–100 knob, or hand them to a temperature curve.">
+<meta property="og:description" content="Turn your Mac's fans down when you want quiet, or up when you're pushing it.">
 <meta property="og:url" content="https://sadrig91.github.io/fanknob/">
-<meta property="og:image" content="https://sadrig91.github.io/fanknob/screenshots/popover-auto.png">
+<meta property="og:image" content="https://sadrig91.github.io/fanknob/screenshots/popover-curve-dark.png">
 <meta name="twitter:card" content="summary_large_image">
 
 <link rel="icon" href="icon-256.png">
@@ -321,18 +321,23 @@
 
   /* ---- screenshots ---- */
 
-  .shots { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
-  .shots img {
-    width: 100%;
-    height: auto;
-    border-radius: 12px;
-    border: 1px solid var(--rule);
+  /* Screenshots are rendered at 2x and shown at their natural point size, so
+     the popover appears life-size and stays sharp. They carry their own
+     rounded corners and shadow — no border here, or it would frame the
+     transparent margin the shadow lives in. */
+  .shots { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  .shots figure { margin: 0; text-align: center; }
+  .shots img { width: 100%; max-width: 372px; height: auto; }
+  .shots figcaption {
+    font-size: 14px;
+    color: var(--muted);
+    margin: 4px auto 0;
+    max-width: 34ch;
+    text-align: left;
   }
-  .shots figure { margin: 0; }
-  .shots figcaption { font-size: 14px; color: var(--muted); margin-top: 12px; }
 
-  .menubar-shot { margin-top: 32px; text-align: center; }
-  .menubar-shot img { max-width: 100%; border-radius: 8px; border: 1px solid var(--rule); }
+  .menubar-shot { margin-top: 28px; text-align: center; }
+  .menubar-shot img { width: 100%; max-width: 314px; height: auto; }
 
   /* ---- feature grid ---- */
 
@@ -447,9 +452,10 @@
     <div>
       <h1>Your Mac's fans, on a knob.</h1>
       <p class="lede">
-        Quiet when you're reading. Cold when you're compiling. A menu-bar app for
-        Apple Silicon that puts your fans where you want them — or hands them to
-        a temperature curve and lets them track the heat.
+        Your Mac decides how loud it wants to be. This lets you decide instead —
+        turn the fans down when you want quiet, or up when you're pushing it hard.
+        Set a speed and it stays there, or pick a curve and it'll follow the heat
+        on its own.
       </p>
 
       <div class="install">
@@ -497,8 +503,8 @@
         </div>
       </div>
       <p class="caption">
-        Try it. Example values from a MacBook Pro 14″ (M2 Pro), where fan 0 runs
-        2,317–6,800 rpm.
+        Have a go — this is the real control. Numbers from a MacBook Pro 14″
+        (M2 Pro), where fan 0 runs between 2,317 and 6,800 rpm.
       </p>
     </div>
   </section>
@@ -507,20 +513,29 @@
     <p class="eyebrow">The app</p>
     <div class="shots">
       <figure>
-        <img src="screenshots/popover-auto.png" width="600" height="580"
-             alt="The fanknob popover in automatic mode, showing CPU and GPU temperature gauges and two fan speeds.">
-        <figcaption>Temperatures, fan speeds, and who's in control. Click a gauge to see the sensors behind it.</figcaption>
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="screenshots/popover-auto-dark.png">
+          <img src="screenshots/popover-auto-light.png" width="372" height="426"
+               alt="The fanknob popover in automatic mode, showing CPU and GPU temperatures and both fan speeds.">
+        </picture>
+        <figcaption>Temperatures, fan speeds, and who's driving them. Click a gauge to see the sensors behind it.</figcaption>
       </figure>
       <figure>
-        <img src="screenshots/popover-curve.png" width="600" height="580"
-             alt="The fanknob popover in curve mode with the Balanced preset selected.">
-        <figcaption>Hand the fans to a curve and they follow the heat — quiet at idle, ramping under load.</figcaption>
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="screenshots/popover-curve-dark.png">
+          <img src="screenshots/popover-curve-light.png" width="372" height="426"
+               alt="The fanknob popover in curve mode with the Balanced preset selected.">
+        </picture>
+        <figcaption>Pick a curve and the fans follow the heat — quiet at idle, ramping when you push it.</figcaption>
       </figure>
     </div>
     <div class="menubar-shot">
-      <img src="screenshots/menubar.png" width="300"
-           alt="The macOS menu bar showing a fan icon next to a live CPU temperature reading.">
-      <p class="caption">The fan turns accent-colored whenever you're overriding the firmware.</p>
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="screenshots/menubar-dark.png">
+        <img src="screenshots/menubar-light.png" width="314" height="83"
+             alt="The macOS menu bar showing the fanknob fan icon next to a live CPU temperature.">
+      </picture>
+      <p class="caption">The fan goes blue whenever you're the one in charge.</p>
     </div>
   </section>
 
@@ -529,37 +544,39 @@
     <div class="grid">
       <div>
         <h3>One knob, every fan</h3>
-        <p>Every fan has its own RPM range, so fanknob maps that range to 0–100.
-           Fifty means halfway, whatever machine you're on. Link the fans
-           together or drive them separately.</p>
+        <p>Fans don't all spin at the same speeds, so you get 0–100 instead of
+           raw numbers to memorise. Fifty is halfway, whatever Mac you're on.
+           Move them together, or one at a time.</p>
       </div>
       <div>
-        <h3>Curves that follow the heat</h3>
-        <p>Quiet, Balanced and Turbo presets, or your own <code>°C:%</code> points.
-           Re-checked every two seconds against a smoothed CPU average.</p>
+        <h3>Curves do the thinking</h3>
+        <p>Pick Quiet, Balanced or Turbo and forget about it — or write your own
+           <code>°C:%</code> points. It checks the temperature every couple of
+           seconds and adjusts.</p>
       </div>
       <div>
-        <h3>A limit you can't overshoot</h3>
-        <p>While you're overriding the fans, fanknob watches the temperature and
-           hands them back to the firmware above 95 °C. Adjustable, and it stays
-           handed back until you ask again.</p>
+        <h3>It won't let things cook</h3>
+        <p>If your Mac gets genuinely hot while you're overriding the fans,
+           fanknob gives them back to the firmware at 95 °C. You can move that
+           line, or switch it off if you'd rather.</p>
       </div>
       <div>
-        <h3>A terminal, if you'd rather</h3>
-        <p>Set a speed with <code>fanknob set 40</code>, pick a curve with
-           <code>fanknob preset quiet</code>, or watch it live in
-           <code>fanknob tui</code>. No <code>sudo</code> per command.</p>
+        <h3>There's a CLI too</h3>
+        <p>If you live in a terminal: <code>fanknob set 40</code>,
+           <code>fanknob preset quiet</code>, or <code>fanknob tui</code> for a
+           live dashboard. No <code>sudo</code> every time.</p>
       </div>
     </div>
   </section>
 
   <section class="band">
     <p class="note">
-      <b>One thing worth knowing.</b> A fixed speed means you own thermal
-      management, not your Mac's firmware. The 95 °C limit is the backstop, but
-      prefer a curve if you're leaving an override on — a curve responds to heat,
-      a fixed speed doesn't. Return to auto when you're done, or let a timed hold
-      expire on its own. (MacBook Air is fanless; there's nothing to control there.)
+      <b>One thing worth knowing.</b> If you pin the fans to a fixed speed,
+      you're the one managing heat now, not your Mac. The 95 °C limit will catch
+      you, but a curve is the better bet if you're leaving something running —
+      it reacts, a fixed speed just sits there. Switch back to auto when you're
+      done, or set a hold and let it expire by itself. (MacBook Airs don't have
+      fans, so there's nothing to do there.)
     </p>
   </section>
 
@@ -567,35 +584,37 @@
     <p class="eyebrow">Help</p>
     <h2>Troubleshooting</h2>
     <dl class="qa">
-      <dt>"helper not installed", or the status light is orange</dt>
+      <dt>It says "helper not installed", or the light is orange</dt>
       <dd>
-        The background helper isn't running, so fanknob can read your fans but
-        not change them. Reinstalling fixes it. To start it by hand:
+        The background helper isn't running, so fanknob can see your fans but
+        can't move them. Reinstalling usually sorts it. To start it yourself:
         <pre>sudo launchctl bootstrap system /Library/LaunchDaemons/com.fanknob.daemon.plist</pre>
       </dd>
 
-      <dt>The fans are stuck at one speed</dt>
+      <dt>My fans are stuck at one speed</dt>
       <dd>
-        Hand them back to the firmware:
+        Give them back to the firmware:
         <pre>fanknob auto</pre>
       </dd>
 
-      <dt>Curves and presets do nothing</dt>
-      <dd>Those need the helper running — it's what re-evaluates the curve over time. See above.</dd>
+      <dt>Curves and presets aren't doing anything</dt>
+      <dd>They need the helper running — it's the bit that keeps checking the temperature. Same fix as above.</dd>
 
-      <dt>Don't mix install methods</dt>
+      <dt>Can I install it twice?</dt>
       <dd>
-        Use the installer package (or the Homebrew cask) or a build from source,
-        not both — two helpers would fight over the same fans, so the second one
-        refuses to start. <code>brew uninstall --cask fanknob</code> removes the first.
+        Best not to. Pick either the installer (or Homebrew) or a build from
+        source — two helpers would end up fighting over the same fans, so the
+        second one just refuses to start.
+        <code>brew uninstall --cask fanknob</code> clears the first.
       </dd>
 
       <dt>Still stuck?</dt>
       <dd>
-        The helper logs to <code>/var/log/fanknobd.log</code>, and
-        <code>fanknob status</code> prints what it thinks is going on. If that
-        doesn't explain it,
-        <a href="https://github.com/SadriG91/fanknob/issues">open an issue</a>.
+        The helper writes to <code>/var/log/fanknobd.log</code>, and
+        <code>fanknob status</code> will tell you what it thinks is happening.
+        If that's no help,
+        <a href="https://github.com/SadriG91/fanknob/issues">open an issue</a>
+        and I'll take a look.
       </dd>
     </dl>
   </section>

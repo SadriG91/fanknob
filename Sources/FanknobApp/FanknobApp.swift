@@ -44,7 +44,24 @@ func statusImage(temp: Int?, manual: Bool) -> NSImage {
     return image
 }
 
+/// Entry point. Debug builds accept `--render-shots <dir>`, which renders the
+/// documentation images and exits instead of launching the UI — see Shots.swift.
 @main
+enum Main {
+    @MainActor
+    static func main() {
+        #if DEBUG
+        let args = CommandLine.arguments
+        if let flag = args.firstIndex(of: "--render-shots") {
+            let dir = flag + 1 < args.count ? args[flag + 1] : "docs/screenshots"
+            Shots.run(into: dir)
+            return
+        }
+        #endif
+        FanknobApp.main()
+    }
+}
+
 struct FanknobApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model = FanModel()
