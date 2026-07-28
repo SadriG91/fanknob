@@ -586,6 +586,11 @@ private struct HoldLabel: View {
 
 // MARK: - Status
 
+/// Where someone whose helper isn't running gets sent. A static literal, so the
+/// unwrap can't fail (same reasoning as the curve presets in Curve.swift).
+private let troubleshootingURL =
+    URL(string: "https://sadrig91.github.io/fanknob/#troubleshooting")!
+
 private struct StatusSection: View {
     @Bindable var model: FanModel
     @State private var hovering = false
@@ -609,12 +614,22 @@ private struct StatusSection: View {
                 .frame(width: 20, height: 20)
                 .contentShape(Rectangle())
                 .onHover { hovering = $0 }
-            Text(model.canWrite ? "helper connected — fan control available"
-                                : "helper not installed — see the README")
-                .font(.caption2).foregroundStyle(.secondary)
-                .lineLimit(1).minimumScaleFactor(0.8)
-                .opacity(model.canWrite && !hovering ? 0 : 1)
-                .animation(.easeOut(duration: 0.15), value: hovering)
+            // Without the helper this warning is permanently on screen, so make
+            // it actionable: underlined rather than accent-colored, since accent
+            // means "you're overriding the firmware" everywhere else in here.
+            Group {
+                if model.canWrite {
+                    Text("helper connected — fan control available")
+                } else {
+                    Link("helper not installed — how to fix",
+                         destination: troubleshootingURL)
+                        .underline()
+                }
+            }
+            .font(.caption2).foregroundStyle(.secondary)
+            .lineLimit(1).minimumScaleFactor(0.8)
+            .opacity(model.canWrite && !hovering ? 0 : 1)
+            .animation(.easeOut(duration: 0.15), value: hovering)
             Spacer()
 
             Menu {
