@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>fanknob — fan control for Apple Silicon Macs</title>
+<meta name="description" content="Put your Mac's fans on a 0–100 knob, or hand them to a temperature curve. A native menu-bar app for Apple Silicon, with a CLI and terminal dashboard.">
+
+<meta property="og:type" content="website">
+<meta property="og:title" content="fanknob — fan control for Apple Silicon Macs">
+<meta property="og:description" content="Put your Mac's fans on a 0–100 knob, or hand them to a temperature curve.">
+<meta property="og:url" content="https://sadrig91.github.io/fanknob/">
+<meta property="og:image" content="https://sadrig91.github.io/fanknob/screenshots/popover-auto.png">
+<meta name="twitter:card" content="summary_large_image">
+
+<link rel="icon" href="icon-256.png">
+
+<style>
+  :root {
+    --paper:  #ffffff;
+    --panel:  #f5f6f7;
+    --rule:   #e1e4e7;
+    --ink:    #111315;
+    --muted:  #5c6469;
+    --thumb:  #ffffff;
+    --accent: #0b62d6;
+    --accent-soft: #0b62d61a;
+    --shadow: 0 1px 2px #11131510, 0 8px 24px #1113150d;
+
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, ui-sans-serif, "Segoe UI",
+            "Helvetica Neue", Arial, sans-serif;
+
+    --step: 180ms;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper:  #0e1012;
+      --panel:  #17191c;
+      --rule:   #26292d;
+      --ink:    #e8eaed;
+      --muted:  #9aa1a8;
+      --thumb:  #cdd3d9;
+      --accent: #5aa9ff;
+      --accent-soft: #5aa9ff1f;
+      --shadow: 0 1px 2px #00000040, 0 8px 24px #00000040;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+
+  * { box-sizing: border-box; }
+
+  html { -webkit-text-size-adjust: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 17px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  a { color: inherit; }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 4px;
+  }
+
+  .wrap { max-width: 1020px; margin: 0 auto; padding: 0 28px; }
+
+  /* Mono is the display face: wordmark, eyebrows, every numeral. */
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 14px;
+  }
+
+  /* ---- nav ---- */
+
+  .nav {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 18px 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  .nav img { width: 22px; height: 22px; border-radius: 5px; }
+  .nav b {
+    font-family: var(--mono);
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .nav .spacer { flex: 1; }
+  .nav a {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--muted);
+    text-decoration: none;
+  }
+  .nav a:hover { color: var(--ink); }
+
+  /* ---- vertical rhythm: one class, so nothing fights over padding ---- */
+
+  .band { padding: 76px 0; border-top: 1px solid var(--rule); }
+  .band:first-of-type { border-top: 0; }
+
+  /* ---- hero ---- */
+
+  .hero {
+    display: grid;
+    grid-template-columns: 1.02fr 1fr;
+    gap: 64px;
+    align-items: center;
+  }
+
+  h1 {
+    font-size: clamp(34px, 5.4vw, 52px);
+    line-height: 1.04;
+    letter-spacing: -0.032em;
+    font-weight: 600;
+    margin: 0 0 20px;
+    text-wrap: balance;
+  }
+
+  .lede { font-size: 19px; color: var(--muted); margin: 0 0 32px; max-width: 34ch; }
+
+  .install { display: flex; align-items: stretch; gap: 0; max-width: 460px; }
+
+  .cmd {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    padding: 13px 15px;
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-right: 0;
+    border-radius: 9px 0 0 9px;
+    font-family: var(--mono);
+    font-size: 13px;
+    overflow-x: auto;
+    white-space: nowrap;
+    scrollbar-width: none;
+  }
+  .cmd::-webkit-scrollbar { display: none; }
+  .cmd .sigil { color: var(--muted); margin-right: 9px; user-select: none; }
+
+  .copy {
+    flex: none;
+    padding: 0 17px;
+    border: 1px solid var(--rule);
+    border-radius: 0 9px 9px 0;
+    background: var(--ink);
+    color: var(--paper);
+    font-family: var(--mono);
+    font-size: 13px;
+    cursor: pointer;
+    transition: opacity var(--step);
+  }
+  .copy:hover { opacity: 0.86; }
+
+  .secondary { margin: 16px 0 0; font-size: 14px; color: var(--muted); }
+  .secondary a { color: var(--ink); text-underline-offset: 3px; }
+  .req { margin: 6px 0 0; font-size: 14px; color: var(--muted); }
+
+  /* ---- the knob: a replica of the app's control ---- */
+
+  .device {
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 14px;
+    padding: 22px;
+    box-shadow: var(--shadow);
+  }
+
+  .device-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 22px;
+  }
+  .device-head .label {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .device-head .spacer { flex: 1; }
+
+  .badge {
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    padding: 3px 8px;
+    border-radius: 999px;
+    color: var(--muted);
+    background: #8a929815;
+    transition: color var(--step), background var(--step);
+  }
+  .device[data-mode="manual"] .badge { color: var(--accent); background: var(--accent-soft); }
+
+  .readout {
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    margin-bottom: 18px;
+  }
+  .readout .value {
+    font-size: 62px;
+    font-weight: 500;
+    letter-spacing: -0.04em;
+    transition: color var(--step);
+  }
+  .device[data-mode="manual"] .readout .value { color: var(--accent); }
+  .readout .pct { font-size: 22px; color: var(--muted); }
+  /* In automatic the number is a readout of what the firmware is doing, not a
+     setpoint you've chosen — so it stays grey until you take over. */
+  .device[data-mode="auto"] .readout .value { color: var(--muted); }
+
+  /* Track: click or drag anywhere, arrow keys when focused. */
+  .track {
+    position: relative;
+    height: 34px;
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    touch-action: none;
+  }
+  .track .rail {
+    position: absolute;
+    inset: 13px 0;
+    border-radius: 999px;
+    background: #8a929826;
+  }
+  .track .fill {
+    position: absolute;
+    left: 0;
+    top: 13px;
+    bottom: 13px;
+    border-radius: 999px;
+    background: var(--muted);
+    transition: width var(--step) ease-out, background var(--step);
+  }
+  .device[data-mode="manual"] .track .fill { background: var(--accent); }
+  .track .thumb {
+    position: absolute;
+    width: 18px;
+    height: 18px;
+    margin-left: -9px;
+    border-radius: 50%;
+    background: var(--thumb);
+    border: 1px solid var(--rule);
+    box-shadow: var(--shadow);
+    transition: left var(--step) ease-out;
+  }
+
+  .rpm {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    color: var(--muted);
+  }
+  .rpm b { color: var(--ink); font-weight: 500; }
+
+  .keys {
+    margin-top: 14px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+  }
+  /* The key legend appears once you're driving — as it does in the TUI. */
+  .device[data-mode="auto"] .keys-legend,
+  .device[data-mode="manual"] .keys-hint { display: none; }
+
+  .auto-btn {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--rule);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    transition: color var(--step), border-color var(--step), opacity var(--step);
+  }
+  .auto-btn:hover { color: var(--ink); border-color: var(--muted); }
+  .device[data-mode="auto"] .auto-btn { opacity: 0; pointer-events: none; }
+
+  .caption { font-size: 13px; color: var(--muted); margin: 14px 2px 0; }
+
+  /* ---- screenshots ---- */
+
+  .shots { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
+  .shots img {
+    width: 100%;
+    height: auto;
+    border-radius: 12px;
+    border: 1px solid var(--rule);
+  }
+  .shots figure { margin: 0; }
+  .shots figcaption { font-size: 14px; color: var(--muted); margin-top: 12px; }
+
+  .menubar-shot { margin-top: 32px; text-align: center; }
+  .menubar-shot img { max-width: 100%; border-radius: 8px; border: 1px solid var(--rule); }
+
+  /* ---- feature grid ---- */
+
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 40px 48px; }
+  .grid h3 { font-size: 17px; font-weight: 600; margin: 0 0 8px; letter-spacing: -0.01em; }
+  .grid p { margin: 0; color: var(--muted); font-size: 15px; }
+  .grid code {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--ink);
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 5px;
+    padding: 1px 5px;
+  }
+
+  /* ---- note ---- */
+
+  .note {
+    border-left: 2px solid var(--muted);
+    padding: 2px 0 2px 20px;
+    color: var(--muted);
+    font-size: 15px;
+    max-width: 68ch;
+  }
+  .note b { color: var(--ink); font-weight: 600; }
+
+  /* ---- troubleshooting ---- */
+
+  h2 {
+    font-size: 26px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    margin: 0 0 28px;
+  }
+
+  .qa { max-width: 74ch; }
+  .qa dt { font-weight: 600; margin-top: 26px; font-size: 16px; }
+  .qa dt:first-child { margin-top: 0; }
+  .qa dd { margin: 6px 0 0; color: var(--muted); font-size: 15px; }
+  .qa pre {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin: 10px 0 0;
+    overflow-x: auto;
+    color: var(--ink);
+  }
+  .qa code {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--ink);
+  }
+
+  /* ---- footer ---- */
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding: 30px 0 60px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 22px;
+    align-items: center;
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--muted);
+  }
+  footer a { text-decoration: none; }
+  footer a:hover { color: var(--ink); }
+  footer .spacer { flex: 1; }
+
+  .visually-hidden {
+    position: absolute; width: 1px; height: 1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+  }
+
+  @media (max-width: 880px) {
+    .hero { grid-template-columns: 1fr; gap: 44px; }
+    .lede { max-width: none; }
+    .grid { grid-template-columns: 1fr; gap: 32px; }
+    .shots { grid-template-columns: 1fr; gap: 28px; }
+    .band { padding: 56px 0; }
+  }
+
+  @media (max-width: 460px) {
+    body { font-size: 16px; }
+    .wrap { padding: 0 20px; }
+    .readout .value { font-size: 50px; }
+    .install { flex-direction: column; max-width: none; }
+    .cmd { border-right: 1px solid var(--rule); border-radius: 9px 9px 0 0; }
+    .copy { border-radius: 0 0 9px 9px; padding: 12px; }
+  }
+</style>
+</head>
+
+<body>
+<div class="wrap">
+
+  <nav class="nav">
+    <img src="icon-256.png" alt="">
+    <b>fanknob</b>
+    <span class="spacer"></span>
+    <a href="#troubleshooting">Help</a>
+    <a href="https://github.com/SadriG91/fanknob">GitHub</a>
+  </nav>
+
+  <!-- Hero: the product's own control, playable before you install. -->
+  <section class="band hero">
+    <div>
+      <h1>Your Mac's fans, on a knob.</h1>
+      <p class="lede">
+        Quiet when you're reading. Cold when you're compiling. A menu-bar app for
+        Apple Silicon that puts your fans where you want them — or hands them to
+        a temperature curve and lets them track the heat.
+      </p>
+
+      <div class="install">
+        <div class="cmd"><span class="sigil">$</span><span id="brew">brew install --cask SadriG91/tap/fanknob</span></div>
+        <button class="copy" id="copy" data-label="Copy">Copy</button>
+      </div>
+
+      <p class="secondary">
+        Or <a href="https://github.com/SadriG91/fanknob/releases/latest">download the signed installer</a>.
+      </p>
+      <p class="req">Apple Silicon · macOS 15 or newer · free and open source</p>
+    </div>
+
+    <div>
+      <div class="device" id="device" data-mode="auto">
+        <div class="device-head">
+          <span class="label">Fan speed</span>
+          <span class="badge" id="badge">AUTO</span>
+          <span class="spacer"></span>
+          <button class="auto-btn" id="auto">Back to auto</button>
+        </div>
+
+        <div class="readout">
+          <span class="value" id="value">18</span><span class="pct">%</span>
+        </div>
+
+        <div class="track" id="track" role="slider" tabindex="0"
+             aria-label="Fan speed" aria-valuemin="0" aria-valuemax="100"
+             aria-valuenow="18" aria-valuetext="18 percent, 3132 rpm, automatic">
+          <span class="rail"></span>
+          <span class="fill" id="fill" style="width:18.2%"></span>
+          <span class="thumb" id="thumb" style="left:18.2%"></span>
+        </div>
+
+        <div class="rpm">
+          <span>Fan 0</span>
+          <span><b id="rpm">3,132</b> rpm</span>
+        </div>
+
+        <div class="keys" aria-hidden="true">
+          <span class="keys-hint">Drag the bar to take over</span>
+          <span class="keys-legend">←/→ ±5</span>
+          <span class="keys-legend">↑/↓ ±1</span>
+          <span class="keys-legend">0–9 speed</span>
+        </div>
+      </div>
+      <p class="caption">
+        Try it. Example values from a MacBook Pro 14″ (M2 Pro), where fan 0 runs
+        2,317–6,800 rpm.
+      </p>
+    </div>
+  </section>
+
+  <section class="band">
+    <p class="eyebrow">The app</p>
+    <div class="shots">
+      <figure>
+        <img src="screenshots/popover-auto.png" width="600" height="580"
+             alt="The fanknob popover in automatic mode, showing CPU and GPU temperature gauges and two fan speeds.">
+        <figcaption>Temperatures, fan speeds, and who's in control. Click a gauge to see the sensors behind it.</figcaption>
+      </figure>
+      <figure>
+        <img src="screenshots/popover-curve.png" width="600" height="580"
+             alt="The fanknob popover in curve mode with the Balanced preset selected.">
+        <figcaption>Hand the fans to a curve and they follow the heat — quiet at idle, ramping under load.</figcaption>
+      </figure>
+    </div>
+    <div class="menubar-shot">
+      <img src="screenshots/menubar.png" width="300"
+           alt="The macOS menu bar showing a fan icon next to a live CPU temperature reading.">
+      <p class="caption">The fan turns accent-colored whenever you're overriding the firmware.</p>
+    </div>
+  </section>
+
+  <section class="band">
+    <p class="eyebrow">What it does</p>
+    <div class="grid">
+      <div>
+        <h3>One knob, every fan</h3>
+        <p>Every fan has its own RPM range, so fanknob maps that range to 0–100.
+           Fifty means halfway, whatever machine you're on. Link the fans
+           together or drive them separately.</p>
+      </div>
+      <div>
+        <h3>Curves that follow the heat</h3>
+        <p>Quiet, Balanced and Turbo presets, or your own <code>°C:%</code> points.
+           Re-checked every two seconds against a smoothed CPU average.</p>
+      </div>
+      <div>
+        <h3>A limit you can't overshoot</h3>
+        <p>While you're overriding the fans, fanknob watches the temperature and
+           hands them back to the firmware above 95 °C. Adjustable, and it stays
+           handed back until you ask again.</p>
+      </div>
+      <div>
+        <h3>A terminal, if you'd rather</h3>
+        <p>Set a speed with <code>fanknob set 40</code>, pick a curve with
+           <code>fanknob preset quiet</code>, or watch it live in
+           <code>fanknob tui</code>. No <code>sudo</code> per command.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="band">
+    <p class="note">
+      <b>One thing worth knowing.</b> A fixed speed means you own thermal
+      management, not your Mac's firmware. The 95 °C limit is the backstop, but
+      prefer a curve if you're leaving an override on — a curve responds to heat,
+      a fixed speed doesn't. Return to auto when you're done, or let a timed hold
+      expire on its own. (MacBook Air is fanless; there's nothing to control there.)
+    </p>
+  </section>
+
+  <section class="band" id="troubleshooting">
+    <p class="eyebrow">Help</p>
+    <h2>Troubleshooting</h2>
+    <dl class="qa">
+      <dt>"helper not installed", or the status light is orange</dt>
+      <dd>
+        The background helper isn't running, so fanknob can read your fans but
+        not change them. Reinstalling fixes it. To start it by hand:
+        <pre>sudo launchctl bootstrap system /Library/LaunchDaemons/com.fanknob.daemon.plist</pre>
+      </dd>
+
+      <dt>The fans are stuck at one speed</dt>
+      <dd>
+        Hand them back to the firmware:
+        <pre>fanknob auto</pre>
+      </dd>
+
+      <dt>Curves and presets do nothing</dt>
+      <dd>Those need the helper running — it's what re-evaluates the curve over time. See above.</dd>
+
+      <dt>Don't mix install methods</dt>
+      <dd>
+        Use the installer package (or the Homebrew cask) or a build from source,
+        not both — two helpers would fight over the same fans, so the second one
+        refuses to start. <code>brew uninstall --cask fanknob</code> removes the first.
+      </dd>
+
+      <dt>Still stuck?</dt>
+      <dd>
+        The helper logs to <code>/var/log/fanknobd.log</code>, and
+        <code>fanknob status</code> prints what it thinks is going on. If that
+        doesn't explain it,
+        <a href="https://github.com/SadriG91/fanknob/issues">open an issue</a>.
+      </dd>
+    </dl>
+  </section>
+
+  <footer>
+    <span>fanknob</span>
+    <span class="spacer"></span>
+    <a href="https://github.com/SadriG91/fanknob">Source</a>
+    <a href="https://github.com/SadriG91/fanknob#readme">Docs</a>
+    <a href="https://github.com/SadriG91/fanknob/blob/main/LICENSE">MIT</a>
+  </footer>
+
+</div>
+
+<p class="visually-hidden" role="status" aria-live="polite" id="status"></p>
+
+<script>
+(function () {
+  var device = document.getElementById('device');
+  var track  = document.getElementById('track');
+  var fill   = document.getElementById('fill');
+  var thumb  = document.getElementById('thumb');
+  var value  = document.getElementById('value');
+  var rpmEl  = document.getElementById('rpm');
+  var badge  = document.getElementById('badge');
+  var autoBtn = document.getElementById('auto');
+
+  // Real range from a MacBook Pro 14" (M2 Pro). The automatic figure is fan 0
+  // from the screenshot further down the page, so the two agree.
+  var MIN = 2317, MAX = 6800;
+  var AUTO_RPM = 3132;
+  var AUTO_POS = (AUTO_RPM - MIN) / (MAX - MIN) * 100;
+
+  var pct = 0, manual = false;
+
+  function render() {
+    var pos = manual ? pct : AUTO_POS;
+    var rpm = manual ? Math.round(MIN + (MAX - MIN) * pct / 100) : AUTO_RPM;
+
+    fill.style.width = pos + '%';
+    thumb.style.left = pos + '%';
+    value.textContent = Math.round(pos);
+    rpmEl.textContent = rpm.toLocaleString('en-US');
+    badge.textContent = manual ? 'MANUAL' : 'AUTO';
+    device.dataset.mode = manual ? 'manual' : 'auto';
+
+    track.setAttribute('aria-valuenow', Math.round(pos));
+    track.setAttribute('aria-valuetext',
+      Math.round(pos) + ' percent, ' + rpm + ' rpm'
+      + (manual ? ', manual' : ', automatic'));
+  }
+
+  function set(next) {
+    pct = Math.max(0, Math.min(100, next));
+    manual = true;
+    render();
+  }
+
+  function fromPointer(event) {
+    var box = track.getBoundingClientRect();
+    set((event.clientX - box.left) / box.width * 100);
+  }
+
+  track.addEventListener('pointerdown', function (event) {
+    track.setPointerCapture(event.pointerId);
+    fromPointer(event);
+  });
+  track.addEventListener('pointermove', function (event) {
+    if (event.buttons) fromPointer(event);
+  });
+
+  track.addEventListener('keydown', function (event) {
+    var base = manual ? pct : 0, step = null;
+    if (event.key === 'ArrowRight') step = base + 5;
+    else if (event.key === 'ArrowLeft') step = base - 5;
+    else if (event.key === 'ArrowUp') step = base + 1;
+    else if (event.key === 'ArrowDown') step = base - 1;
+    else if (event.key === 'Home') step = 0;
+    else if (event.key === 'End') step = 100;
+    else if (/^[0-9]$/.test(event.key)) step = event.key === '0' ? 0 : +event.key * 10;
+    if (step === null) return;
+    event.preventDefault();
+    set(step);
+  });
+
+  autoBtn.addEventListener('click', function () {
+    manual = false;
+    pct = 0;
+    render();
+    track.focus();
+  });
+
+  // Copy the install command.
+  var copy = document.getElementById('copy');
+  var status = document.getElementById('status');
+  copy.addEventListener('click', function () {
+    var text = document.getElementById('brew').textContent;
+    navigator.clipboard.writeText(text).then(function () {
+      copy.textContent = 'Copied';
+      status.textContent = 'Install command copied';
+      setTimeout(function () {
+        copy.textContent = copy.dataset.label;
+        status.textContent = '';
+      }, 1600);
+    }).catch(function () {
+      status.textContent = 'Press ' + (navigator.platform.indexOf('Mac') === 0 ? 'Cmd' : 'Ctrl') + '-C to copy';
+    });
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

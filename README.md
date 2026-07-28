@@ -1,49 +1,34 @@
 <p align="center">
-  <img src="assets/AppIcon-1024.png" width="128" alt="fanknob icon">
+  <img src="docs/icon-256.png" width="128" alt="fanknob icon">
 </p>
 
 # fanknob — fan control for Apple Silicon Macs
 
 [![CI](https://github.com/SadriG91/fanknob/actions/workflows/ci.yml/badge.svg)](https://github.com/SadriG91/fanknob/actions/workflows/ci.yml)
 
-Control your Mac's fans with a **0–100 knob** (mapped onto each fan's own
-min→max RPM range) and monitor CPU/GPU temperatures. Three faces on one engine:
+Make your Mac quieter, or keep it cooler. fanknob puts your fans on a **0–100
+knob** — mapped onto each fan's own min→max RPM range — and shows you what the
+CPU and GPU are actually doing. Set a fixed speed, or hand the fans to a
+temperature curve and let them track the heat.
 
-- **`fanknob`** — CLI (`status`, `set`, `preset`, `curve`, `auto`, …)
-- **`fanknob tui`** — live interactive terminal dashboard
-- **Fanknob.app** — a native SwiftUI **menu-bar app**
-
-It talks to the SMC directly over IOKit — the same mechanism apps like Macs Fan
-Control use. Tested on a MacBook Pro 14" (M2 Pro, macOS 26).
+It's a native menu-bar app, and a CLI and terminal dashboard if you prefer those.
+Tested on a MacBook Pro 14" (M2 Pro, macOS 26).
 
 <p align="center">
-  <img src="assets/screenshots/popover-auto.png" width="300" alt="Popover in automatic mode">
+  <img src="docs/screenshots/popover-auto.png" width="300" alt="Popover in automatic mode">
   &nbsp;&nbsp;
-  <img src="assets/screenshots/popover-curve.png" width="300" alt="Popover in curve mode with the Balanced preset">
+  <img src="docs/screenshots/popover-curve.png" width="300" alt="Popover in curve mode with the Balanced preset">
 </p>
 <p align="center">
-  <img src="assets/screenshots/menubar.png" alt="Menu bar: fan icon with live CPU temperature">
+  <img src="docs/screenshots/menubar.png" alt="Menu bar: fan icon with live CPU temperature">
   <br>
   <em>Live CPU temperature in the menu bar; the fan turns accent-colored whenever you are overriding the firmware.</em>
 </p>
 
-## Layout
-
-```
-Package.swift
-Sources/
-  FanknobCore/   shared engine: SMC access, fan/temp model, daemon client
-  fanknob/       CLI + TUI
-  fanknobd/      root daemon (privileged writes)
-  FanknobApp/    SwiftUI menu-bar app
-app/Info.plist   app bundle metadata
-com.fanknob.daemon.plist
-```
-
 ## Install
 
-Two ways in, both a single step. Fan control works the moment either finishes —
-the installer loads the root helper daemon for you.
+Apple Silicon and macOS 15 or newer. Two ways in, both a single step — fan
+control works the moment either one finishes.
 
 **Homebrew:**
 
@@ -52,19 +37,19 @@ brew install --cask SadriG91/tap/fanknob
 ```
 
 **Or download** the signed `Fanknob-<version>.pkg` from
-[Releases](https://github.com/SadriG91/fanknob/releases/latest) and double-click.
+[Releases](https://github.com/SadriG91/fanknob/releases/latest) and double-click it.
 
 It installs:
 
 | Path | |
 |---|---|
 | `/Applications/Fanknob.app` | the menu-bar app |
-| `/usr/local/bin/fanknob` | the CLI and TUI |
-| `/usr/local/bin/fanknobd` | the root helper daemon |
-| `/Library/LaunchDaemons/com.fanknob.daemon.plist` | loads the daemon at boot |
+| `/usr/local/bin/fanknob` | the command line tool |
+| `/usr/local/bin/fanknobd` | the background helper that does the actual fan writes |
+| `/Library/LaunchDaemons/com.fanknob.daemon.plist` | starts the helper at boot |
 
-Apple Silicon and macOS 15+ only — the installer refuses anything else up front
-rather than laying down binaries that can't run.
+The installer refuses an Intel Mac or macOS 14 up front, rather than laying down
+binaries that can't run.
 
 ### Updating
 
@@ -72,7 +57,7 @@ rather than laying down binaries that can't run.
 brew upgrade --cask fanknob
 ```
 
-Or install a newer `.pkg` over the top; it replaces the running daemon cleanly.
+Or install a newer `.pkg` over the top; it replaces the running helper cleanly.
 
 ### Uninstalling
 
@@ -80,62 +65,61 @@ Or install a newer `.pkg` over the top; it replaces the running daemon cleanly.
 brew uninstall --cask fanknob
 ```
 
-The daemon hands the fans back to the firmware as it's stopped, so removing
+The helper hands the fans back to the firmware as it's stopped, so removing
 fanknob can't strand them at a fixed speed. Add `--zap` to also remove the saved
-configuration in `/Library/Application Support/fanknob`.
+settings in `/Library/Application Support/fanknob`.
 
-## Build from source
+## The menu-bar app
+
+A fan icon and the live CPU temperature sit in your menu bar. Click for:
+
+- **CPU / GPU temperature gauges** — click one to expand the individual sensors
+  behind it (an M2 Pro reports 54 CPU probes; they're die sensors, not one per
+  core, so they're listed by sensor name, hottest first)
+- **per-fan RPM gauges**
+- an **Auto / Manual / Curve** mode picker
+- a **Fan speed** slider that applies live — switch the row from *Linked* to
+  *Individual* for one slider per fan
+- **Quiet / Balanced / Turbo** curve presets, and in manual mode a **Hold**
+  picker (Off / 30s / 1m / 2m / 5m) with a live countdown
+- a gear menu with **Open at login** and the thermal safety limit
+- a status light (hover it) and a header warning if the safety limit trips
+
+It runs as a menu-bar app with no Dock icon, and never asks for your password —
+the background helper does the privileged work.
+
+> Toggle **Open at login** from the installed copy (`/Applications/Fanknob.app`)
+> — login items register whichever copy is running.
+
+## Controlling your fans
+
+**The knob.** Every fan has its own minimum and maximum RPM. Rather than making
+you memorise those, fanknob maps them to 0–100: 0 is that fan's slowest, 100 is
+its fastest, and 50 is halfway. Use the slider, or:
 
 ```sh
-git clone https://github.com/SadriG91/fanknob.git
-cd fanknob
-make app             # build everything + assemble Fanknob.app
-sudo make install    # install CLI + daemon + app, load the daemon
+fanknob set 40                # all fans to 40%
+fanknob set 60 --fan 1        # just fan 1; the others keep their setpoints
+fanknob set 60 --for 120      # hold 60% for two minutes, then back to automatic
 ```
 
-> Use ONE install method — the package or `make install`, not both. Each target
-> refuses to run when the other is already in place.
-
-All targets:
+**Curves.** Instead of pinning a fixed speed, hand the fans to a curve and they
+track CPU temperature for you — quiet when idle, ramping as it heats:
 
 ```sh
-make                 # build everything (release)
-make app             # assemble build/Fanknob.app
-make run-app         # build + launch the menu-bar app
-make pkg             # unsigned installer .pkg, for local testing
-make pkg-signed      # Developer ID signed .pkg (needs certs; CI does this)
-make notarize        # notarize + staple the signed .pkg
-sudo make install    # install CLI + daemon + app to the system, load the daemon
-sudo make uninstall
-```
-
-> If you hit an Xcode license error building the app:
-> `sudo xcodebuild -license accept`
-
-The one-time `sudo` on install is unavoidable: granting future passwordless root
-access requires proving you're root once. After that the root daemon performs
-the writes, and the CLI/app stay unprivileged — no `sudo` per command.
-
-## Temperature curves
-
-Instead of pinning a fixed speed, hand the fans to a curve and the daemon
-tracks CPU temperature for you — quiet when idle, ramping as it heats:
-
-```sh
-fanknob preset quiet          # silent until ~72 °C, full by 94 °C
-fanknob preset balanced       # default: responsive without being loud
+fanknob preset quiet          # near minimum until ~72 °C, full by 94 °C
+fanknob preset balanced       # responsive without being loud
 fanknob preset turbo          # keeps things cold, audibly
 fanknob curve 55:0,72:20,85:60,93:100     # or roll your own °C:% points
 ```
 
-The curve is evaluated every 2 s against a smoothed CPU-cluster average, with
-a small deadband so fans don't hunt. Between points the speed is interpolated
-linearly; outside the endpoints it's held flat.
+The curve is re-checked every 2 seconds against a smoothed CPU average, with a
+small deadband so the fans don't hunt. Between your points the speed is
+interpolated; outside them it's held flat.
 
-### Thermal watchdog
-
-While any override is active, the daemon watches the temperature and hands the
-fans back to the firmware if it crosses a limit (default 95 °C):
+**Thermal safety limit.** While you're overriding the fans, fanknob watches the
+temperature and hands them back to the firmware if it crosses a limit — 95 °C by
+default:
 
 ```sh
 fanknob watchdog 90           # stricter
@@ -143,69 +127,50 @@ fanknob watchdog off          # you're on your own
 ```
 
 It's deliberately sticky: once tripped it stays in automatic until you ask for
-something new, rather than flapping in and out of an override that isn't
-keeping up. `fanknob status` and the app both report a trip.
+something new, rather than flapping in and out of an override that isn't keeping
+up. The app shows a warning, and so does `fanknob status`.
 
-### Persistence
+**It sticks.** Whatever's active — a curve, a fixed speed, your safety limit — is
+saved and restored after a reboot.
 
-The active mode and watchdog threshold live in
-`/Library/Application Support/fanknob/config.json` and are restored when the
-daemon starts, so a curve survives reboots.
-
-## Per-fan control
+**Back to normal**, any time:
 
 ```sh
-fanknob set 60 --fan 1        # just fan 1; the others keep their setpoints
+fanknob auto
 ```
 
-In the app, switch the speed row from **Linked** to **Individual** for a
-slider per fan.
+## Important
 
-## The menu-bar app
+- A **fixed** speed means you own thermal management, not the firmware. The
+  safety limit is the backstop (95 °C by default), but prefer a **curve** if
+  you're leaving an override on — a curve responds to heat, a fixed speed
+  doesn't.
+- Return to auto when you're done: `fanknob auto`, the app's Auto button, or let
+  a hold expire on its own.
+- MacBook Air is fanless — there's nothing to control there.
 
-`make run-app` (or `open -a Fanknob` after install) puts a fan icon + live CPU
-temperature in your menu bar. Click it for:
-
-- CPU / GPU temperature gauges — click one to expand the individual sensors
-  behind it (an M2 Pro reports 54 CPU probes; they're die sensors, not one per
-  core, so they're listed by SMC key, hottest first)
-- per-fan RPM gauges
-- an **Auto / Manual / Curve** mode picker
-- a **Fan speed** slider that applies live (or one slider per fan — switch the
-  row from *Linked* to *Individual*)
-- **Quiet / Balanced / Turbo** curve presets, and in manual mode a **Hold**
-  picker (Off / 30s / 1m / 2m / 5m) with a live countdown
-- a gear menu with **Open at login** and the watchdog threshold
-- a status light (hover it) and a header warning if the watchdog trips
-
-It runs as a menu-bar agent (no Dock icon). Writes go through the daemon, so the
-app never needs elevated privileges.
-
-> Toggle **Open at login** from the installed copy (`/Applications/Fanknob.app`)
-> — login items register whichever bundle is running.
-
-## CLI
+## Command line
 
 ```sh
-fanknob status              # fans, temps, and what the daemon is driving
+fanknob status              # fans, temperatures, and what's driving them
 fanknob tui                 # live interactive dashboard
 fanknob temp                # every temperature sensor
-fanknob set 40              # all fans to 40% of range      (no sudo — via daemon)
+fanknob set 40              # all fans to 40% of range
 fanknob set 60 --for 120    # hold 60% for 120s, then auto-revert
 fanknob set 60 --fan 1      # just one fan
 fanknob preset balanced     # temperature curve
 fanknob curve 55:0,90:100   # custom curve
 fanknob watchdog 90         # thermal safety limit
 fanknob auto                # back to automatic control
-fanknob keys [prefix]       # dump SMC keys (default 'F')
+fanknob keys [prefix]       # dump raw sensor keys (default 'F')
 ```
 
-Reads need no privileges. `set`/`auto` go through the root daemon if installed,
-otherwise run them with `sudo`.
+Reading needs no privileges, and neither does changing speed — the background
+helper handles that, so there's no `sudo` per command.
 
-## TUI
+## Terminal dashboard
 
-`fanknob tui` opens a full-screen dashboard with live gauges and a keyboard knob:
+`fanknob tui` opens a full-screen view with live gauges and a keyboard knob:
 
 ```
  fanknob   Apple M2 Pro
@@ -226,69 +191,51 @@ otherwise run them with `sudo`.
 `←/→` ±5, `↑/↓` ±1, `0`–`9` jump to a speed, `c` cycles curves, `t` the hold,
 `a` auto, `q` quit.
 
-## Testing
+## Troubleshooting
+
+**"helper not installed", or the status light is orange.** The background helper
+isn't running, so fanknob can read your fans but not change them. Reinstalling
+fixes it. To start it by hand:
 
 ```sh
-make test      # unit tests: SMC codecs, knob math, temp clustering, daemon protocol
-make ui-test   # UI acceptance: real synthetic clicks on the app's Auto/Manual toggle
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.fanknob.daemon.plist
 ```
 
-`ui-test` is a regression test for the "sticky toggle" bug (the SMC reports the
-old fan mode for tens of ms after a write; the app must not let a stale poll
-yank the toggle back). It drives real CGEvent clicks, so it needs the app
-running, the daemon installed, and Accessibility permission for the terminal.
+**The fans are stuck at one speed.** Hand them back to the firmware:
 
-## Releasing
+```sh
+fanknob auto
+```
 
-The version lives in exactly one place, `Sources/FanknobCore/Version.swift`.
-Bump it, commit, then push a matching `vX.Y.Z` tag — the release workflow refuses
-to build a tag that disagrees with it. CI takes it from there: it builds and
-publishes the `.pkg`, then repoints the cask. No manual steps.
+**Curves and presets do nothing.** Those need the helper running — it's what
+re-evaluates the curve over time. See above.
 
-`CFBundleVersion` is the commit count rather than the marketing version, because
-it has to increase monotonically and macOS reads `13` as newer than `1.4.0`.
+**Don't mix install methods.** Use the package (or the Homebrew cask) *or* a
+build from source, not both — two helpers would fight over the same fans, so the
+second one refuses to start. `brew uninstall --cask fanknob` removes the first.
 
-## Important
-
-- A **fixed** speed means you own thermal management, not the firmware. The
-  thermal watchdog is the backstop (default 95 °C), but prefer a **curve** if
-  you're leaving an override on — it responds to heat, a fixed speed doesn't.
-- Return to auto when done: `fanknob auto`, the app's Auto button, or let a
-  hold expire.
-- MacBook Air is fanless; nothing to control there.
+**Still stuck?** The helper logs to `/var/log/fanknobd.log`, and `fanknob status`
+prints what it thinks is going on.
 
 ## How it works
 
-Per fan `i`, the SMC exposes `FNum` (count), `FiAc` (actual RPM), `FiMn`/`FiMx`
-(min/max), `FiTg` (target RPM, `flt`), `FiMd` (mode: 0 = auto, 1 = manual). To
-force a speed: write `1` to `FiMd`, then the target RPM to `FiTg`. To release:
-write `0` to `FiMd`.
+fanknob talks to your Mac's System Management Controller — the same mechanism
+apps like Macs Fan Control use. Reading fan speeds and temperatures needs no
+special privileges. *Changing* a fan does, so a small background helper runs as
+root and does it for you.
 
-**Temperature:** Apple Silicon has no single documented "CPU temp" key. fanknob
-scans all `T…` sensors of type `flt` in a plausible range and reports the average
-of the CPU-core (`Tp*`) and GPU (`Tg*`) clusters.
+That helper accepts only a fixed set of commands — set a speed, follow a curve,
+set the safety limit, go back to automatic — and every one is range-checked
+before it reaches the hardware. It can't be talked into doing anything but
+moving your fans. It also hands them back to the firmware whenever it's stopped
+or removed, so fanknob can't leave them stranded.
 
-### The 80-byte struct gotcha
+Your settings live in `/Library/Application Support/fanknob/config.json`.
 
-The kernel's `SMCKeyData_t` is exactly 80 bytes. Swift reuses a nested struct's
-trailing padding for the next field (C does not), which silently packs the param
-struct to 76 bytes and makes every `IOConnectCallStructMethod` fail with
-`kIOReturnBadArgument`. `SMCKeyInfoData` is padded to a full 12 bytes to prevent
-this — see the comment in `Sources/FanknobCore/SMC.swift`.
+## Contributing
 
-### Daemon security
-
-The root daemon accepts only a fixed set of commands over its socket (`set`,
-`setfan`, `curve`, `preset`, `watchdog`, `auto`, `state`), each parsed and
-range-checked by one pure function before anything reaches the SMC. So even
-though any local user can connect, it can't be driven to do anything but move
-the fans.
-
-The daemon is also a system-wide singleton (flock on `/var/run/fanknobd.lock`):
-if a second instance starts — say a Homebrew-managed daemon next to a
-`make install` one — it refuses to run instead of stealing the socket, and its
-launchd keep-alive retries mean it takes over automatically if the first one is
-ever stopped.
+Build instructions, the test suite, and the technical details are in
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
