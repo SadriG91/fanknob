@@ -3,6 +3,7 @@
 #   make                 build everything (release)
 #   make app             assemble Fanknob.app (menu-bar app)
 #   make run-app         build + assemble + launch the app
+#   make shots           re-render the documentation screenshots
 #   make pkg             build an unsigned installer .pkg (local testing)
 #   make pkg-signed      build a Developer ID signed .pkg
 #   make notarize        notarize + staple the signed .pkg
@@ -35,7 +36,7 @@ SIGN_APP ?= Developer ID Application
 SIGN_PKG ?= Developer ID Installer
 NOTARY_PROFILE ?= fanknob-notary
 
-.PHONY: all app run-app stage pkg pkg-signed notarize print-version test ui-test clean install uninstall
+.PHONY: all app run-app stage pkg pkg-signed notarize print-version test ui-test shots clean install uninstall
 
 all:
 	$(SWIFT_BUILD)
@@ -54,6 +55,13 @@ ui-test:
 	swiftc -O scripts/click.swift -o /tmp/fanknob-click
 	python3 scripts/toggle-acceptance.py
 	python3 scripts/badge-acceptance.py
+
+# Regenerate the README/landing-page screenshots from the real views, in both
+# light and dark. Deliberately a debug build: the renderer is behind #if DEBUG
+# so it never ships. See Sources/FanknobApp/Shots.swift.
+shots:
+	swift build
+	./.build/debug/FanknobApp --render-shots docs/screenshots
 
 # Assemble a double-clickable menu-bar .app around the built binary.
 # (assets/AppIcon.icns is generated from assets/fanknob_logo.png by

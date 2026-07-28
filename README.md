@@ -15,14 +15,22 @@ It's a native menu-bar app, and a CLI and terminal dashboard if you prefer those
 Tested on a MacBook Pro 14" (M2 Pro, macOS 26).
 
 <p align="center">
-  <img src="docs/screenshots/popover-auto.png" width="300" alt="Popover in automatic mode">
-  &nbsp;&nbsp;
-  <img src="docs/screenshots/popover-curve.png" width="300" alt="Popover in curve mode with the Balanced preset">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/popover-auto-dark.png">
+    <img src="docs/screenshots/popover-auto-light.png" width="372" alt="Popover in automatic mode">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/popover-curve-dark.png">
+    <img src="docs/screenshots/popover-curve-light.png" width="372" alt="Popover in curve mode with the Balanced preset">
+  </picture>
 </p>
 <p align="center">
-  <img src="docs/screenshots/menubar.png" alt="Menu bar: fan icon with live CPU temperature">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/menubar-dark.png">
+    <img src="docs/screenshots/menubar-light.png" width="314" alt="Menu bar: fan icon with live CPU temperature">
+  </picture>
   <br>
-  <em>Live CPU temperature in the menu bar; the fan turns accent-colored whenever you are overriding the firmware.</em>
+  <em>Live CPU temperature in the menu bar; the fan turns blue whenever you're the one in charge.</em>
 </p>
 
 ## Install

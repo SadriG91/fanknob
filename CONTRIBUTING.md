@@ -48,6 +48,7 @@ All targets:
 make                 # build everything (release)
 make app             # assemble build/Fanknob.app
 make run-app         # build + launch the menu-bar app
+make shots           # re-render the documentation screenshots
 make pkg             # unsigned installer .pkg, for local testing
 make pkg-signed      # Developer ID signed .pkg (needs certs; CI does this)
 make notarize        # notarize + staple the signed .pkg
@@ -111,6 +112,34 @@ They can't run in CI (no live SMC, no Accessibility grant), so they're a
 dev-machine gate. They exist because the toggle and the per-fan badges are the
 two things that broke in ways unit tests can't see — see *SMC write lag* below.
 If you change anything in `FanModel` or the popover's control block, run them.
+
+## Screenshots
+
+The images in the README and on the landing page are **rendered from the real
+views**, not captured by hand:
+
+```sh
+make shots
+```
+
+That builds debug and runs `FanknobApp --render-shots docs/screenshots`, which
+hosts `PopoverView` in an offscreen window with fixture data and writes a light
+and a dark PNG for each shot at 2x. Re-run it whenever you change the popover,
+and commit the result.
+
+Two things about it are deliberate:
+
+- **It's behind `#if DEBUG`**, so none of it ships. That's also why the target
+  builds debug rather than release.
+- **It uses an offscreen `NSHostingView`, not SwiftUI's `ImageRenderer`.**
+  The mode picker, speed slider and gear menu are AppKit-backed, and
+  ImageRenderer draws those as yellow "unsupported" placeholders. Hosting the
+  view in a window gives them a real backing store.
+
+The renderer also pumps the run loop for a moment before snapshotting, because
+the speed slider eases its thumb toward the target on a frame timer instead of
+animating implicitly — snapshot too early and the thumb is still at zero while
+the label already reads the right percentage.
 
 ## Releasing
 

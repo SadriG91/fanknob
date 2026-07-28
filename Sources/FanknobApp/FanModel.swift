@@ -126,6 +126,17 @@ final class FanModel {
         }
     }
 
+    #if DEBUG
+    /// Builds a model that touches no hardware and starts no timer, so the
+    /// documentation screenshots can be rendered from the real views with
+    /// known values. See Shots.swift. Never compiled into a release build.
+    init(fixture: Void) {
+        ready = true
+        canWrite = true
+        daemonPresent = true
+    }
+    #endif
+
     init() {
         workQueue.async { [weak self] in
             guard let self else { return }
