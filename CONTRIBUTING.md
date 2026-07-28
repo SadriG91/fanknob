@@ -1,8 +1,8 @@
 # Contributing to fanknob
 
-Bug reports, fixes and ideas are welcome. This file covers building, testing,
-releasing, and the parts of the implementation that are surprising enough to be
-worth writing down.
+Bug reports, fixes and ideas are welcome. This covers building, testing and
+releasing, plus the handful of things in the implementation that will catch you
+out.
 
 For what fanknob does and how to use it, see the [README](README.md).
 
@@ -25,8 +25,8 @@ scripts/         icon generation and the UI acceptance harness
 com.fanknob.daemon.plist
 ```
 
-Building the SwiftUI app needs the macOS SDK from Xcode or the Command Line
-Tools. If you hit an Xcode license error: `sudo xcodebuild -license accept`.
+Building the app needs the macOS SDK from Xcode or the Command Line Tools. On an
+Xcode license error: `sudo xcodebuild -license accept`.
 
 ## Build from source
 
@@ -38,9 +38,9 @@ sudo make install    # install CLI + daemon + app, and load the daemon
 ```
 
 > Use ONE install method — the package (or the Homebrew cask) or `make install`,
-> not both. Each target refuses to run when the other is already in place, because
-> two daemons would fight over the same socket and the stale package receipt would
-> claim files the other target owns.
+> not both. Each refuses to run when the other is in place: two daemons would
+> fight over the same socket, and the stale package receipt would claim files the
+> other target owns.
 
 All targets:
 
@@ -54,45 +54,26 @@ make pkg-signed      # Developer ID signed .pkg (needs certs; CI does this)
 make notarize        # notarize + staple the signed .pkg
 make print-version   # the version, for scripts
 make clean
-sudo make install    # install CLI + daemon + app, load the daemon
+sudo make install
 sudo make uninstall
 ```
 
-`make install` deliberately only *copies* — it never builds. Building as root
-would leave root-owned files in `.build/` and `build/` that break your later
-builds as a normal user. Run `make app` first as yourself.
-
-The one-time `sudo` on install is unavoidable: granting future passwordless root
-access requires proving you're root once. After that the daemon performs the
-writes and the CLI and app stay unprivileged.
-
-For local notarization, store credentials once:
-
-```sh
-xcrun notarytool store-credentials fanknob-notary \
-      --key <p8> --key-id <id> --issuer <uuid>
-```
-
-CI passes `--key`/`--key-id`/`--issuer` directly instead.
+`make install` only *copies*, never builds — building as root would leave
+root-owned files in `.build/` that break your later builds. Run `make app` first
+as yourself.
 
 ## Testing
 
 ```sh
-make test    # or: swift test
+make test                                        # or: swift test
+swift test --filter DaemonProtocolTests          # one suite
+swift test --filter DaemonProtocolTests/plainSet # one test
 ```
 
-Unit tests cover the pure logic in `FanknobCore` — SMC codecs, knob math,
-temperature clustering, curve evaluation, config round-trips and the daemon
-protocol parser. They need no hardware, no root and no daemon, so they run in CI
-on every push.
-
-They use [Swift Testing](https://developer.apple.com/documentation/testing)
-(`@Suite` / `@Test`), so a single suite or test is:
-
-```sh
-swift test --filter DaemonProtocolTests
-swift test --filter DaemonProtocolTests/plainSet
-```
+Unit tests cover the pure logic in `FanknobCore` — codecs, knob math, temperature
+clustering, curves, config round-trips, the daemon protocol parser. They need no
+hardware, root or daemon, so CI runs them on every push. They use
+[Swift Testing](https://developer.apple.com/documentation/testing).
 
 ### UI acceptance tests
 
@@ -100,66 +81,23 @@ swift test --filter DaemonProtocolTests/plainSet
 make ui-test
 ```
 
-Two Python harnesses (`scripts/toggle-acceptance.py`, `scripts/badge-acceptance.py`)
-that drive the real app through the Accessibility API and post real CGEvent
-clicks — indistinguishable from a physical mouse. They need:
-
-- Fanknob.app running (`make run-app`)
-- the `fanknobd` daemon installed and running
-- Accessibility permission for your terminal (System Settings → Privacy & Security)
-
-They can't run in CI (no live SMC, no Accessibility grant), so they're a
-dev-machine gate. They exist because the toggle and the per-fan badges are the
-two things that broke in ways unit tests can't see — see *SMC write lag* below.
-If you change anything in `FanModel` or the popover's control block, run them.
+Two Python harnesses that drive the real app through the Accessibility API with
+real CGEvent clicks. They need Fanknob.app running, the daemon installed, and
+Accessibility permission for your terminal, so they can't run in CI. Run them if
+you touch `FanModel` or the popover's control block — they cover the sticky
+toggle and badge flicker, which unit tests can't see (see *SMC write lag*).
 
 ## Screenshots
 
-The images in the README and on the landing page are **rendered from the real
-views**, not captured by hand:
+The README and landing-page images are generated rather than captured by hand:
 
 ```sh
 make shots
 ```
 
-That builds debug and runs `FanknobApp --render-shots docs/screenshots`, which
-hosts `PopoverView` in an offscreen window with fixture data and writes, for
-both light and dark:
-
-- **stills** at 2x — the two popover shots and the menu-bar strip;
-- **the hero reel** (`reel-light.mp4` / `reel-dark.mp4`) plus a poster frame —
-  a ~10 s scripted tour through automatic, manual, a curve and back.
-
-Re-run it whenever you change the popover, and commit the result.
-
-The output is deterministic in content but not byte-for-byte: the header's fan
-icon spins, so it lands at a slightly different angle each run and a couple of
-PNGs will always show as modified. Nothing to chase.
-
-Two things about it are deliberate:
-
-- **It's behind `#if DEBUG`**, so none of it ships. That's also why the target
-  builds debug rather than release.
-- **It uses an offscreen `NSHostingView`, not SwiftUI's `ImageRenderer`.**
-  The mode picker, speed slider and gear menu are AppKit-backed, and
-  ImageRenderer draws those as yellow "unsupported" placeholders. Hosting the
-  view in a window gives them a real backing store.
-
-The renderer also pumps the run loop for a moment before snapshotting, because
-the speed slider eases its thumb toward the target on a frame timer instead of
-animating implicitly — snapshot too early and the thumb is still at zero while
-the label already reads the right percentage.
-
-The reel needs the same care for a different reason. The view's animations
-advance in real time no matter how fast we can capture, and a frame costs more
-than 1/30 s to grab. Stamping frames at a nominal 30 fps therefore played the
-app's own motion back about three times too fast. So the script, the view and
-the video all run off one clock: beats are driven by elapsed time and each
-frame is stamped with the moment it was actually taken. Playback is then
-exactly what happened, at whatever rate capture managed (currently ~25 fps).
-That is also why frames are rendered straight into the encoder's pixel buffer —
-going via a bitmap rep and a CGImage copied every frame three times and halved
-the achievable rate.
+Re-run it after changing the popover and commit the result. A couple of PNGs
+come out modified on every run regardless — the header's fan icon spins, so it
+lands at a different angle each time. Nothing to chase.
 
 ## Releasing
 
@@ -170,99 +108,87 @@ Bump it, commit, then push a matching `vX.Y.Z` tag:
 git tag v1.4.2 && git push origin v1.4.2
 ```
 
-The release workflow refuses to build a tag that disagrees with `Version.swift`.
-From there it's automatic: build, sign with Developer ID, notarize, staple,
-publish the `.pkg` and its checksum to the release, then repoint the Homebrew
-cask in `SadriG91/homebrew-tap`.
+The release workflow refuses a tag that disagrees with `Version.swift`. From
+there it's automatic: build, sign with Developer ID, notarize, staple, publish
+the `.pkg` and its checksum, then repoint the Homebrew cask in
+`SadriG91/homebrew-tap`.
 
 `CFBundleVersion` is the commit count rather than the marketing version, because
 it has to increase monotonically and macOS reads `13` as newer than `1.4.0`. The
-`CFBundleShortVersionString` checked into `app/Info.plist` is a placeholder —
-`make app` stamps the real one in.
+`CFBundleShortVersionString` in `app/Info.plist` is a placeholder — `make app`
+stamps the real one in.
 
 CI builds and tests on both `macos-15` (the deployment floor) and `macos-26` (the
-SDK releases are built with; an app linked against an older SDK gets the legacy
+SDK releases are built with; linking against an older one gets the app the legacy
 compatibility appearance).
 
 ## How it works
 
 ### Fans
 
-Per fan `i`, the SMC exposes `FNum` (count), `FiAc` (actual RPM), `FiMn`/`FiMx`
-(min/max), `FiTg` (target RPM, `flt`), and `FiMd` (mode: 0 = auto, 1 = manual).
-To force a speed: write `1` to `FiMd`, then the target RPM to `FiTg`. To release:
-write `0` to `FiMd`. The 0–100 knob is just a position in the `FiMn`→`FiMx` range.
+Per fan `i` the SMC exposes `FNum` (count), `FiAc` (actual RPM), `FiMn`/`FiMx`
+(min/max), `FiTg` (target RPM) and `FiMd` (mode: 0 auto, 1 manual). To force a
+speed, write `1` to `FiMd` then the RPM to `FiTg`; to release, write `0`. The
+0–100 knob is just a position in the `FiMn`→`FiMx` range.
 
 ### Temperature
 
-Apple Silicon has no single documented "CPU temp" key. fanknob scans all `T…`
-sensors of type `flt` in a plausible range and averages the CPU-core (`Tp*`) and
-GPU (`Tg*`) clusters. On an M2 Pro that's ~54 CPU probes. The keys are
-enumerated once and re-read directly afterwards, so a live view doesn't rescan
-all ~1500 SMC keys per frame.
+Apple Silicon has no single documented "CPU temp" key, so fanknob scans every
+`T…` sensor of type `flt` in a plausible range and averages the CPU (`Tp*`) and
+GPU (`Tg*`) clusters — about 54 CPU probes on an M2 Pro. The keys are enumerated
+once and re-read directly afterwards, so a live view doesn't rescan all ~1500 SMC
+keys per frame.
 
-### The 80-byte struct gotcha
+### The 80-byte struct
 
-The kernel's `SMCKeyData_t` is exactly 80 bytes. Swift reuses a nested struct's
-trailing padding for the next field (C does not), which silently packs the param
-struct to 76 bytes and makes every `IOConnectCallStructMethod` fail with
-`kIOReturnBadArgument`. `SMCKeyInfoData` is padded to a full 12 bytes to prevent
-this — see the comment in `Sources/FanknobCore/SMC.swift`. Don't tidy those
-padding fields away, and re-check the size if you add a field.
+`SMCKeyData_t` is exactly 80 bytes. Swift reuses a nested struct's trailing
+padding for the next field where C does not, silently packing it to 76 and making
+every `IOConnectCallStructMethod` fail with `kIOReturnBadArgument`. Hence the
+explicit padding in `SMCKeyInfoData` — don't tidy it away, and re-check the size
+if you add a field.
 
 ### SMC write lag
 
 After a mode write the SMC keeps reporting the **old** `FiMd` for tens of
-milliseconds, and it can't distinguish a curve from a fixed speed — both are just
-"managed". Two consequences, both load-bearing in the app:
+milliseconds, and it can't tell a curve from a fixed speed — both read as
+"managed". Two consequences, both load-bearing:
 
-- The mode of record is the **daemon's** reported state whenever it's reachable;
-  the SMC is only the fallback. Only the daemon knows a curve is driving.
-- `FanModel` runs a mode intent guard plus an in-flight write counter, so a poll
-  taken *before* a user action can't publish *after* it and yank the UI back.
-  Per-fan badges come from the app's mode, never from `Fan.managed` directly.
-
-This is what `make ui-test` regression-tests: the "sticky toggle" bug and badge
-flicker on mode changes.
+- The mode of record is the **daemon's** state whenever it's reachable; the SMC
+  is only the fallback. Only the daemon knows a curve is driving.
+- `FanModel` runs a mode intent guard and an in-flight write counter, so a poll
+  taken before a user action can't publish after it and yank the UI back. Badges
+  come from the app's mode, never from `Fan.managed`.
 
 ### Daemon security
 
-The root daemon accepts only a fixed set of commands over its socket (`set`,
-`setfan`, `curve`, `preset`, `watchdog`, `auto`, `state`), each parsed and
-range-checked by one pure function — `parseDaemonCommand` in `Daemon.swift` —
-before anything reaches the SMC. So even though any local user can connect, it
-can't be driven to do anything but move the fans. **Adding a command means
-touching four places:** the `DaemonCommand` enum and its parser, `Controller.handle`
-in `Sources/fanknobd/Main.swift`, the `FanController` facade, and the callers.
-Keep the validation in the parser so it stays testable without hardware.
+The root daemon accepts only `set`, `setfan`, `curve`, `preset`, `watchdog`,
+`auto` and `state`, each validated and range-checked by one pure function —
+`parseDaemonCommand` in `Daemon.swift` — before anything reaches the SMC. Any
+local user can connect, but can't drive it to do anything except move fans.
+**Adding a command touches four places:** the `DaemonCommand` enum and its
+parser, `Controller.handle`, the `FanController` facade, and the callers. Keep
+the validation in the parser so it stays testable without hardware.
 
-The daemon is also a system-wide singleton (flock on `/var/run/fanknobd.lock`):
-if a second instance starts — say a Homebrew-managed daemon next to a
-`make install` one — it refuses to run instead of stealing the socket, and its
-launchd keep-alive retries mean it takes over automatically if the first one is
-ever stopped.
-
-It hands the fans back to the firmware on SIGTERM/SIGINT. That matters: the SMC
-holds `FiMd = 1` until something writes 0 back, so a daemon that simply exited
-would leave the fans pinned with nothing running to move them.
+It's also a system-wide singleton (flock on `/var/run/fanknobd.lock`) so two
+installs can't fight over the socket, and it hands the fans back on
+SIGTERM/SIGINT — the SMC holds `FiMd = 1` until something writes 0, so a daemon
+that simply exited would leave them pinned with nothing left to move them.
 
 ## Packaging
 
 Two details in `packaging/` are load-bearing and easy to undo by accident:
 
 - **`component.plist` sets `BundleIsRelocatable=false`.** pkgbuild treats `.app`
-  bundles as relocatable by default, which makes Installer ask LaunchServices
-  where `com.fanknob.app` already lives and install *there* — so on any machine
-  that has ever opened a copy from `~/Downloads` or a build directory, the
-  upgrade lands in that location and `/Applications` is left empty. This shipped
-  in 1.4.0. CI now greps the built package for `relocatable="false"`.
+  bundles as relocatable by default, so Installer asks LaunchServices where
+  `com.fanknob.app` already lives and installs *there* — leaving `/Applications`
+  empty on any machine that has ever opened a copy from `~/Downloads`. Shipped
+  that way in 1.4.0; CI now greps the built package for `relocatable="false"`.
 - **`scripts/postinstall` is why this ships as a `.pkg` at all.** Installer is
-  already root, so it loads the daemon itself and waits for the socket to appear
-  before declaring success — fan control works the moment the install finishes,
-  with no "now open a terminal and run this".
+  already root, so it loads the daemon and waits for the socket before declaring
+  success — fan control works the moment the install finishes.
 
-Signing note: if `codesign` fails with *"unable to build chain to self-signed
-root"* and `security find-identity` shows 0 valid identities, the Developer ID G2
+If `codesign` fails with *"unable to build chain to self-signed root"* and
+`security find-identity` shows 0 valid identities, the Developer ID G2
 intermediate is missing from the keychain — the key itself is fine. The release
 workflow imports it explicitly from Apple.
 
