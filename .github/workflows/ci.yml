@@ -15,6 +15,7 @@ on:
       - "assets/AppIcon.icns"   # bundled into the app; verified by CI
       - "packaging/**"
       - "scripts/test-preinstall.sh"
+      - "scripts/test-postinstall.sh"
       - ".github/workflows/ci.yml"
   pull_request:
     paths:
@@ -26,6 +27,7 @@ on:
       - "assets/AppIcon.icns"
       - "packaging/**"
       - "scripts/test-preinstall.sh"
+      - "scripts/test-postinstall.sh"
       - ".github/workflows/ci.yml"
 
 permissions:
@@ -43,7 +45,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Test installer guard
-        run: make test-preinstall
+        run: make test-preinstall test-postinstall
 
       - name: Build (release)
         run: swift build -c release
