@@ -89,9 +89,13 @@ A fan icon and the live CPU temperature sit in your menu bar. Click for:
 - an **Auto / Manual / Curve** mode picker
 - a **Fan speed** slider that applies live — switch the row from *Linked* to
   *Individual* for one slider per fan
-- **Quiet / Balanced / Turbo** curve presets, and in manual mode a **Hold**
+- **Quiet / Balanced / Turbo** curve presets, plus a draggable custom-curve
+  editor with reusable importable/exportable profiles
+- in manual mode, a **Hold**
   picker (Off / 30s / 1m / 2m / 5m) with a live countdown
-- a gear menu with **Open at login** and the thermal safety limit
+- 30-minute CPU, RPM, and requested-speed history
+- a gear menu with **Open at login**, safety notifications, diagnostic export,
+  and the thermal safety limit
 - a status light (hover it) and a header warning if the safety limit trips
 
 It runs as a menu-bar app with no Dock icon, and never asks for your password —
@@ -126,8 +130,11 @@ fanknob curve 55:0,72:20,85:60,93:100     # or roll your own °C:% points
 ```
 
 The curve is re-checked every 2 seconds against a smoothed CPU average, with a
-small deadband so the fans don't hunt. Between your points the speed is
-interpolated; outside them it's held flat.
+small deadband so the fans don't hunt. The watchdog independently watches the
+hottest valid temperature sensor. Between your points the speed is
+interpolated; outside them it's held flat. Custom curves require 2–12 points
+between 20–110 °C, with temperatures at least 1 °C apart and non-decreasing
+speeds.
 
 **Thermal safety limit.** While you're overriding the fans, fanknob watches the
 temperature and hands them back to the firmware if it crosses a limit — 95 °C by
@@ -142,8 +149,10 @@ It's deliberately sticky: once tripped it stays in automatic until you ask for
 something new, rather than flapping in and out of an override that isn't keeping
 up. The app shows a warning, and so does `fanknob status`.
 
-**It sticks.** Whatever's active — a curve, a fixed speed, your safety limit — is
-saved and restored after a reboot.
+**It sticks safely.** Whatever's active — a curve, a fixed speed, your safety
+limit, or the absolute deadline of a timed hold — is saved and restored after a
+reboot. An expired hold returns to Auto immediately; three failed temperature
+checks do the same while an override is active.
 
 **Back to normal**, any time:
 
@@ -168,6 +177,8 @@ fanknob auto
 
 ```sh
 fanknob status              # fans, temperatures, and what's driving them
+fanknob status --json       # the same state for scripts and monitoring
+fanknob diagnose --json     # privacy-safe compatibility report
 fanknob tui                 # live interactive dashboard
 fanknob temp                # every temperature sensor
 fanknob set 40              # all fans to 40% of range

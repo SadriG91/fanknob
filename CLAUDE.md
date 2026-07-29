@@ -23,6 +23,7 @@ make print-version            # the version, for scripts
 sudo make install             # copy artifacts to the system + load the daemon
 sudo make uninstall
 make test-preinstall          # package/source-install guard fixtures
+make test-postinstall         # helper readiness + console-user relaunch fixtures
 make ui-test                  # UI acceptance tests (see below)
 ```
 
@@ -58,6 +59,7 @@ FanknobCore/   SMC.swift        IOKit/SMC engine: fourCC, codecs, fan + temp rea
                Curve.swift      FanCurve (°C→knob%) + built-in presets
                Config.swift     persisted DaemonConfig, DaemonState wire format
                Daemon.swift     client side: socket, singleton lock, parseDaemonCommand
+               DaemonEngine.swift  injected safety/state machine used by fanknobd
                FanController.swift  facade used by the app/CLI (daemon-or-direct writes)
                Version.swift    the version constant
 fanknob/       CLI.swift, TUI.swift          unprivileged client
@@ -76,9 +78,14 @@ change and persist its settings. Keep the shared-Mac warning in the README and
 landing page aligned with this behavior.
 
 **Adding a command means touching four places:**
-the `DaemonCommand` enum + parser, `Controller.handle` in `fanknobd/Main.swift`,
+the `DaemonCommand` enum + parser, `DaemonEngine.handle`,
 the `FanController` facade, and the CLI/app callers. Keep validation in the
 parser so it stays unit-testable without hardware.
+
+Protocol v2 uses bounded newline framing and structured `DaemonReply` JSON.
+Keep the legacy request/reply path working for an already-running app during a
+package upgrade. Socket clients may run concurrently, but all `DaemonEngine`
+and SMC access must stay serialized on `smcQueue`.
 
 **Why the daemon owns more than one-shot writes.** Curves are re-evaluated every
 2 s against a smoothed CPU-cluster temperature, the thermal watchdog needs a
@@ -89,9 +96,15 @@ curves/watchdog are daemon-only: `FanController.setPreset`/`setCurve`/
 `auto()` prefers the daemon even when root, because a direct SMC write wouldn't
 stop a curve the daemon is still driving.
 
-**Daemon lifecycle invariants.** The SMC holds `FiMd = 1` until something writes
+**Daemon lifecycle invariants.** `DaemonEngine` receives `FanHardware`, a clock,
+config path and logger so safety behavior remains testable without an SMC.
+Curves use a smoothed CPU average; watchdog decisions use the hottest sensor
+from the same sample. Three missing samples, partial writes, expired persisted
+holds, or failed restoration all return to Auto.
+
+The SMC holds `FiMd = 1` until something writes
 0 back, so a daemon that just exits strands the fans at their last target.
-`Controller.shutdown()` hands them back on SIGTERM/SIGINT — which is why both
+`DaemonEngine.shutdown()` hands them back on SIGTERM/SIGINT — which is why both
 signals are `SIG_IGN`'d before the dispatch sources are installed (a dispatch
 signal source only observes; the default disposition would kill the process
 first). A flock on `/var/run/fanknobd.lock` makes the daemon a system-wide
@@ -123,7 +136,8 @@ curve from a fixed speed (both are just "managed"). Both facts shape the app:
 
 These are exactly the bugs `make ui-test` regression-tests.
 
-**FanModel threading.** All `FanController`/SMC access is confined to one serial
+**FanModel threading.** `FanModel` is `@MainActor`. All `FanController`/SMC
+access is confined to one serial
 `workQueue` — the controller is even constructed there, since sensor discovery
 takes ~0.4 s. All published state is main-queue only. Polls coalesce (never more
 than one in flight, never dropped). `publish()` assigns only when a value
@@ -138,8 +152,9 @@ the release workflow refuses a `vX.Y.Z` tag that disagrees with it.
 `CFBundleVersion` is the git commit count — it must increase monotonically, and
 macOS compares `13` as newer than `1.4.0`.
 
-**Package.swift pins `swiftLanguageModes: [.v5]`** on purpose: the daemon and app
-manage threading manually and are not written for Swift 6 strict concurrency.
+**Package.swift uses `swiftLanguageModes: [.v6]`.** Keep shared value types
+`Sendable`, UI state main-actor isolated, and mutable SMC/daemon state confined
+to its documented serial queue when extending the project.
 
 ## Release + packaging
 
@@ -159,6 +174,8 @@ Three packaging details are load-bearing and easy to undo:
   `make test-preinstall` covering clean installs, conflicts and upgrades.
 - `packaging/scripts/postinstall` is why this ships as a `.pkg` at all: Installer
   is already root, so it loads the daemon and waits for the socket to appear.
+  Its app restart is scoped to the console UID (`pkill -U "$uid"`); keep
+  `make test-postinstall` covering root, console-user, and no-console sessions.
 
 Signing note: `codesign` failing with "unable to build chain to self-signed root"
 (and `find-identity` showing 0 valid identities) means the Developer ID G2

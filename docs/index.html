@@ -594,7 +594,8 @@
       <p class="curve-copy">
         Below 45&nbsp;°C the fans stay near minimum; above 90 they're flat out.
         Between those points fanknob interpolates, re-checking every two seconds
-        against a smoothed CPU average. Quiet and Turbo use their own tuning.
+        against a smoothed CPU average. Quiet and Turbo use their own tuning,
+        and the app includes a draggable editor for saving your own profiles.
       </p>
     </div>
   </figure>
@@ -649,8 +650,8 @@
       <div>
         <h3>Curves do the thinking</h3>
         <p>
-          Quiet, Balanced or Turbo — or write your own <code>°C:%</code>
-          points and let fanknob track them.
+          Quiet, Balanced or Turbo — or drag your own points in the app, preview
+          the result live, and save, import or export the profile.
         </p>
       </div>
 
@@ -658,7 +659,8 @@
         <h3>A thermal backstop</h3>
         <p>
           While you're overriding the fans, fanknob hands them back to the
-          firmware at <span class="number">95&nbsp;°C</span> by default.
+          firmware if the hottest sensor reaches
+          <span class="number">95&nbsp;°C</span> by default.
         </p>
       </div>
 
@@ -666,7 +668,8 @@
         <h3>There's a CLI too</h3>
         <p>
           <code>fanknob set 40</code>, <code>fanknob preset quiet</code>, or
-          <code>fanknob tui</code> for a live dashboard.
+          <code>fanknob tui</code> for a live dashboard. JSON status and
+          privacy-safe diagnostics are built in for scripts and issue reports.
         </p>
       </div>
     </div>

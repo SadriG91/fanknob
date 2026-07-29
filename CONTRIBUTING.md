@@ -14,7 +14,7 @@ core library:
 ```
 Package.swift
 Sources/
-  FanknobCore/   shared engine: SMC access, fan/temp model, curves, daemon client
+  FanknobCore/   SMC access, fan/temp model, curves, daemon client + safety engine
   fanknob/       the CLI and the TUI
   fanknobd/      the root daemon that performs privileged writes
   FanknobApp/    the SwiftUI menu-bar app
@@ -62,6 +62,7 @@ make clean
 sudo make install
 sudo make uninstall
 make test-preinstall # exercise the package/source-install guard
+make test-postinstall # exercise helper readiness + console-user relaunch scoping
 ```
 
 `make install` only *copies*, never builds — building as root would leave
@@ -78,14 +79,17 @@ python3 scripts/check-docs.py                    # local documentation links/ass
 ```
 
 Unit tests cover the pure logic in `FanknobCore` — codecs, knob math, temperature
-clustering, curves, config round-trips, the daemon protocol parser. They need no
-hardware, root or daemon, so CI runs them whenever code, tests, packaging or
-build configuration changes. They use
+clustering, curves, config round-trips, socket framing, the daemon protocol, and
+the injected `DaemonEngine` safety state machine (watchdog, missing sensors,
+restart-safe holds and partial writes). They need no hardware, root or daemon,
+so CI runs them whenever code, tests, packaging or build configuration changes.
+They use
 [Swift Testing](https://developer.apple.com/documentation/testing).
 
 `make test-preinstall` exercises the installer guard against clean,
 source-installed and package-upgrade fixtures. CI also checks that the guard is
-present in the built package.
+present in the built package. `make test-postinstall` stubs the system tools and
+uses a temporary socket to verify helper readiness plus UID-scoped app relaunch.
 
 ### UI acceptance tests
 
@@ -174,8 +178,12 @@ milliseconds, and it can't tell a curve from a fixed speed — both read as
 ### Daemon security
 
 The root daemon accepts only `set`, `setfan`, `curve`, `preset`, `watchdog`,
-`auto` and `state`, each validated and range-checked by one pure function —
-`parseDaemonCommand` in `Daemon.swift` — before anything reaches the SMC. Any
+`auto` and `state`, each exact-arity validated and range-checked by one pure
+function — `parseDaemonCommand` in `Daemon.swift` — before anything reaches the
+SMC. Requests and replies are newline-framed with a 2 KiB bound and socket
+timeouts; protocol v2 replies are structured JSON while the server retains
+one-release compatibility with text clients. Clients are handled concurrently,
+but every `DaemonEngine`/SMC operation remains serialized on `smcQueue`. Any
 local user can connect, but can't drive it to do anything except move fans.
 That is an explicit trust decision, not per-user authorization: fan control is
 system-wide, and any local account can change the active mode, safety limit and
@@ -183,13 +191,19 @@ persisted settings. Keep the shared-Mac warning in the README and landing page
 in sync with this behavior.
 
 **Adding a command touches four places:** the `DaemonCommand` enum and its
-parser, `Controller.handle`, the `FanController` facade, and the callers. Keep
+parser, `DaemonEngine.handle`, the `FanController` facade, and the callers. Keep
 the validation in the parser so it stays testable without hardware.
 
 It's also a system-wide singleton (flock on `/var/run/fanknobd.lock`) so two
 installs can't fight over the socket, and it hands the fans back on
 SIGTERM/SIGINT — the SMC holds `FiMd = 1` until something writes 0, so a daemon
 that simply exited would leave them pinned with nothing left to move them.
+
+`DaemonEngine` owns the safety-critical state machine and receives a
+`FanHardware`, clock, config path and logger. Keep hardware-free behavior there
+so watchdog trips, failed sensor reads, hold restoration and partial writes stay
+unit-testable. Curves use a smoothed CPU-cluster average; the watchdog uses the
+hottest valid sensor from the same single sample.
 
 ## Packaging
 
@@ -206,7 +220,9 @@ Three details in `packaging/` are load-bearing and easy to undo by accident:
   installs, conflicts and package upgrades.
 - **`scripts/postinstall` is why this ships as a `.pkg` at all.** Installer is
   already root, so it loads the daemon and waits for the socket before declaring
-  success — fan control works the moment the install finishes.
+  success — fan control works the moment the install finishes. It restarts only
+  the console user's app process (`pkill -U "$uid"`); the package and system
+  helper remain system-wide.
 
 If `codesign` fails with *"unable to build chain to self-signed root"* and
 `security find-identity` shows 0 valid identities, the Developer ID G2
