@@ -104,10 +104,20 @@ private struct ParallaxUnder: ViewModifier {
 /// invisible; both only show while the card is travelling over the page
 /// beneath it.
 private struct SlideOverCard: ViewModifier {
+    /// True only while a pane transition is in flight. The solid backing and
+    /// shadow exist to occlude the sibling pane beneath the travelling card —
+    /// left on at rest, the backing covers the popover's translucent material
+    /// and the editor visibly loses the vibrancy the main view has. (A
+    /// Material background is NOT a substitute: measured mid-flight, SwiftUI
+    /// materials composite translucently over sibling views, so the page
+    /// beneath bled through the card again.)
+    var opaque: Bool
+
     func body(content: Content) -> some View {
         content
-            .background(Color(nsColor: .windowBackgroundColor))
-            .shadow(color: .black.opacity(0.35), radius: 12, x: -6)
+            .background(Color(nsColor: .windowBackgroundColor)
+                .opacity(opaque ? 1 : 0))
+            .shadow(color: .black.opacity(opaque ? 0.35 : 0), radius: 12, x: -6)
             .transition(.move(edge: .trailing))
     }
 }
@@ -120,6 +130,8 @@ private let paneAnimationScale: Double =
 struct PopoverView: View {
     var model: FanModel
     @State private var showingHelp = false
+    @State private var paneTransitioning = false
+    @State private var paneSettleWork: DispatchWorkItem?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// The main view recedes underneath an incoming pane with parallax.
@@ -133,11 +145,11 @@ struct PopoverView: View {
             if model.showCurveEditor {
                 CurveEditorView(model: model) { model.showCurveEditor = false }
                     .padding(16)
-                    .modifier(SlideOverCard())
+                    .modifier(SlideOverCard(opaque: paneTransitioning))
             } else if showingHelp {
                 HelpView { showingHelp = false }
                     .padding(16)
-                    .modifier(SlideOverCard())
+                    .modifier(SlideOverCard(opaque: paneTransitioning))
             } else {
                 VStack(alignment: .leading, spacing: 14) {
                     HeaderSection(model: model) { showingHelp = true }
@@ -198,6 +210,8 @@ struct PopoverView: View {
                    : .smooth(duration: (showingHelp ? 0.32 : 0.24)
                              * paneAnimationScale),
                    value: showingHelp)
+        .onChange(of: model.showCurveEditor) { _, _ in beginPaneTransition() }
+        .onChange(of: showingHelp) { _, _ in beginPaneTransition() }
         .onAppear {
             model.popoverOpened()   // fresh data the moment it opens
             // Reopen on the main view, never mid-help (the editor's version
@@ -206,6 +220,22 @@ struct PopoverView: View {
             transaction.disablesAnimations = true
             withTransaction(transaction) { showingHelp = false }
         }
+    }
+
+    /// Arms the card's occluding backing for the duration of a pane push or
+    /// pop, then fades it out so the settled pane sits on the popover's own
+    /// translucent material again.
+    private func beginPaneTransition() {
+        paneSettleWork?.cancel()
+        paneTransitioning = true
+        let work = DispatchWorkItem {
+            withAnimation(.easeOut(duration: 0.15 * paneAnimationScale)) {
+                paneTransitioning = false
+            }
+        }
+        paneSettleWork = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + 0.4 * paneAnimationScale, execute: work)
     }
 }
 
