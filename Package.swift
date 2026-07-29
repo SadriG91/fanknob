@@ -30,7 +30,5 @@ let package = Package(
             dependencies: ["FanknobCore"]
         ),
     ],
-    // Keep Swift 5 semantics: the daemon/app manage threading manually and
-    // don't need Swift 6 strict-concurrency enforcement.
-    swiftLanguageModes: [.v5]
+    swiftLanguageModes: [.v6]
 )
