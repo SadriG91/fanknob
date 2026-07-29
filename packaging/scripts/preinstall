@@ -1,0 +1,35 @@
+#!/bin/sh
+# preinstall — run as root by Installer before the payload is written.
+#
+# Refuses to install over a copy built from source. `sudo make install` puts the
+# same files in the same places but leaves no package receipt, so without this
+# check the package would overwrite them and then claim them — after which
+# neither `make uninstall` nor the cask's pkgutil cleanup owns the whole
+# install, and removing fanknob leaves pieces behind.
+#
+# The Makefile already guards the other direction, so with this the two install
+# methods refuse each other symmetrically.
+#
+# Installer passes the target volume as $3; everything is resolved against it so
+# this can be exercised against a scratch directory rather than a real install.
+
+set -u
+
+VOLUME="${3:-/}"
+ROOT="${VOLUME%/}"
+DAEMON="$ROOT/usr/local/bin/fanknobd"
+PLIST="$ROOT/Library/LaunchDaemons/com.fanknob.daemon.plist"
+
+# A receipt means the existing install came from this package, so it's an
+# upgrade and entirely fine.
+if pkgutil --volume "$VOLUME" --pkg-info com.fanknob.pkg >/dev/null 2>&1; then
+    exit 0
+fi
+
+if [ -e "$DAEMON" ] || [ -e "$PLIST" ]; then
+    echo "fanknob: a source-built copy is already installed (no package receipt)." >&2
+    echo "fanknob: remove it first with 'sudo make uninstall', then install again." >&2
+    exit 1
+fi
+
+exit 0
