@@ -610,7 +610,12 @@ final class FanModel: @unchecked Sendable {
                 guard let self else { return }
                 self.notificationsEnabled = granted
                 UserDefaults.standard.set(granted, forKey: notificationsKey)
-                if let error {
+                // notificationsNotAllowed is a denial, not a failure — show
+                // the actionable message, not "UNErrorDomain error 1". Ad-hoc
+                // dev builds (make app) hit it on every request: they have no
+                // stable code identity, so Notification Center refuses without
+                // prompting. The Developer ID-signed release prompts normally.
+                if let error, (error as? UNError)?.code != .notificationsNotAllowed {
                     self.controlError = "Notifications could not be enabled: \(error.localizedDescription)"
                 } else if !granted {
                     self.controlError = "Notifications are disabled in System Settings."
