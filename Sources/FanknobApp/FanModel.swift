@@ -17,6 +17,8 @@
 import SwiftUI
 import Observation
 import ServiceManagement
+import UserNotifications
+import UniformTypeIdentifiers
 import FanknobCore
 
 // Diagnostics: timestamped event log at /tmp/fanknob-ui.log.
@@ -44,6 +46,36 @@ enum UIMode: String, CaseIterable {
 }
 
 private let askedAboutLoginKey = "askedAboutLaunchAtLogin"
+private let notificationsKey = "safetyNotificationsEnabled"
+private let curveProfilesKey = "savedCurveProfiles"
+
+struct HistorySample: Identifiable, Equatable {
+    let id = UUID()
+    let date: Date
+    let cpu: Double?
+    let gpu: Double?
+    let fanPercent: Double?
+    let fanRPM: Double?
+}
+
+struct CurveProfile: Codable, Equatable, Identifiable {
+    var id: UUID
+    var name: String
+    var points: [FanCurve.Point]
+
+    init(id: UUID = UUID(), name: String, points: [FanCurve.Point]) {
+        self.id = id
+        self.name = name
+        self.points = points
+    }
+}
+
+@MainActor
+private func loadCurveProfiles() -> [CurveProfile] {
+    guard let data = UserDefaults.standard.data(forKey: curveProfilesKey) else { return [] }
+    return ((try? JSONDecoder().decode([CurveProfile].self, from: data)) ?? [])
+        .filter { FanCurve($0.points) != nil }
+}
 
 /// What a per-fan badge should say.
 enum FanBadge: String {
@@ -51,11 +83,16 @@ enum FanBadge: String {
     var overridden: Bool { self != .auto }
 }
 
+@MainActor
 @Observable
-final class FanModel {
+final class FanModel: @unchecked Sendable {
     // workQueue-confined (created there in init; serial queue orders all access)
-    @ObservationIgnored private var controller: FanController!
-    @ObservationIgnored private let workQueue =
+    // These two properties are intentionally excluded from main-actor
+    // isolation: every access is serialized by workQueue. FanModel itself is
+    // @unchecked Sendable only so those queue hops can retain it; all
+    // observable UI state remains main-actor isolated.
+    @ObservationIgnored nonisolated(unsafe) private var controller: FanController!
+    @ObservationIgnored nonisolated private let workQueue =
         DispatchQueue(label: "com.fanknob.app.smc", qos: .userInitiated)
     @ObservationIgnored private var timer: Timer?
 
@@ -70,6 +107,11 @@ final class FanModel {
     @ObservationIgnored private var pendingMode: UIMode?
     @ObservationIgnored private var pendingModeUntil = Date.distantPast
     @ObservationIgnored private var tick = 0
+    @ObservationIgnored private var lastHistoryDate = Date.distantPast
+    @ObservationIgnored private var lastNotifiedSafetyReason: String?
+    @ObservationIgnored private var helperFailurePolls = 0
+    @ObservationIgnored private var helperFailureNotified = false
+    @ObservationIgnored private var previousHoldRemaining = 0
 
     @ObservationIgnored let chip = chipName()
 
@@ -109,24 +151,25 @@ final class FanModel {
     var holdRemaining = 0
     var watchdogCelsius: Double? = DaemonConfig.defaultWatchdogCelsius
     var watchdogTripped = false
+    var safetyReason: String?
+    var controlError: String?
     /// True when no daemon is running but the app could still drive fans as
     /// root — curves need the daemon, so the UI hides them.
     var daemonPresent = false
+    var lastDaemonState: DaemonState?
 
     /// True while the user is dragging a slider.
     var editing = false
+    var history: [HistorySample] = []
+    var showCurveEditor = false
+    var curveProfiles: [CurveProfile] = loadCurveProfiles()
+    var notificationsEnabled = UserDefaults.standard.bool(forKey: notificationsKey)
+    private(set) var loginItemStatus = SMAppService.mainApp.status
+    var loginItemError: String?
 
     var launchAtLogin: Bool {
-        get { SMAppService.mainApp.status == .enabled }
-        set {
-            do {
-                newValue ? try SMAppService.mainApp.register()
-                         : try SMAppService.mainApp.unregister()
-            } catch {
-                UILog.log("launch-at-login \(newValue) failed: \(error)")
-            }
-            askedAboutLogin = true
-        }
+        get { loginItemStatus == .enabled }
+        set { setLaunchAtLogin(newValue) }
     }
 
     /// Whether we've offered to keep fanknob in the menu bar.
@@ -145,13 +188,19 @@ final class FanModel {
 
     /// True only while the offer is worth showing: we haven't asked, and it
     /// isn't already on (someone may have enabled it from a previous install).
-    var shouldOfferLogin: Bool { !askedAboutLogin && !launchAtLogin }
+    var shouldOfferLogin: Bool {
+        (!askedAboutLogin && !launchAtLogin) || loginItemError != nil
+            || loginItemStatus == .requiresApproval
+    }
 
     #if DEBUG
     /// Builds a model that touches no hardware and starts no timer, so the
     /// documentation screenshots can be rendered from the real views with
     /// known values. See Shots.swift. Never compiled into a release build.
     init(fixture: Void) {
+        // Property observers are not called during initialization, so this
+        // suppresses the offer without writing screenshot state to UserDefaults.
+        askedAboutLogin = true
         ready = true
         canWrite = true
         daemonPresent = true
@@ -172,15 +221,18 @@ final class FanModel {
             }
         }
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            tick += 1
-            let visible = popoverIsVisible
-            if popoverShown != visible { popoverShown = visible }
-            if visible {
-                pollOnce(.full)
-            } else if tick % 5 == 0 {
-                pollOnce(.light)
-            }
+            Task { @MainActor [weak self] in self?.timerFired() }
+        }
+    }
+
+    private func timerFired() {
+        tick += 1
+        let visible = popoverIsVisible
+        if popoverShown != visible { popoverShown = visible }
+        if visible {
+            pollOnce(.full)
+        } else if tick % 5 == 0 {
+            pollOnce(.light)
         }
     }
 
@@ -194,6 +246,7 @@ final class FanModel {
     /// the UI is fresh the moment it opens, instead of one tick later.
     func popoverOpened() {
         popoverShown = true
+        refreshLoginItemStatus()
         pollOnce(.full)
     }
 
@@ -289,6 +342,9 @@ final class FanModel {
         if scope == .full { sensors = snap.temps.all }
         if canWrite != writable { canWrite = writable }
         if daemonPresent != (state != nil) { daemonPresent = state != nil }
+        if lastDaemonState != state { lastDaemonState = state }
+        recordHistory(snap)
+        handleNotificationTransitions(state)
 
         let shownTemp = (snap.temps.cpu ?? snap.temps.gpu).map { Int($0.rounded()) }
         if menuTemp != shownTemp { menuTemp = shownTemp }
@@ -325,6 +381,7 @@ final class FanModel {
             if watchdogCelsius != state.watchdogCelsius { watchdogCelsius = state.watchdogCelsius }
             if watchdogTripped != state.watchdogTripped { watchdogTripped = state.watchdogTripped }
             if holdRemaining != state.holdRemaining { holdRemaining = state.holdRemaining }
+            if safetyReason != state.safetyReason { safetyReason = state.safetyReason }
         }
 
         // In manual mode the fans' targets ARE the setpoints, so mirroring them
@@ -348,13 +405,19 @@ final class FanModel {
 
     /// Run a controller write on the workQueue, tracking it so polls can't
     /// clobber optimistic UI state, then refresh immediately after it lands.
-    private func performWrite(_ op: @escaping (FanController) -> Void) {
+    private func performWrite(_ op: @escaping @Sendable (FanController) -> Bool) {
         writesInFlight += 1
         workQueue.async { [weak self] in
             guard let self else { return }
-            op(self.controller)
+            let succeeded = op(self.controller)
+            let message = self.controller.lastError
             DispatchQueue.main.async {
                 self.writesInFlight -= 1
+                if succeeded {
+                    self.controlError = nil
+                } else {
+                    self.controlError = message ?? "The fan-control request failed."
+                }
                 self.pollOnce()
             }
         }
@@ -438,9 +501,267 @@ final class FanModel {
         performWrite { $0.setPreset(p) }
     }
 
+    func applyCustomCurve(_ curve: FanCurve) {
+        guard canWrite, daemonPresent else { return }
+        intend(.curve)
+        holdRemaining = 0
+        preset = .balanced
+        performWrite { $0.setCurve(curve) }
+    }
+
     func setWatchdog(_ celsius: Double?) {
         guard canWrite, daemonPresent else { return }
         watchdogCelsius = celsius
         performWrite { $0.setWatchdog(celsius) }
+    }
+
+    // MARK: History and notifications
+
+    private func recordHistory(_ snapshot: Snapshot) {
+        let date = Date()
+        guard date.timeIntervalSince(lastHistoryDate) >= 5 else { return }
+        lastHistoryDate = date
+        history.append(HistorySample(
+            date: date,
+            cpu: snapshot.temps.cpu,
+            gpu: snapshot.temps.gpu,
+            fanPercent: snapshot.fans.first?.knob,
+            fanRPM: snapshot.fans.first?.actual
+        ))
+        let cutoff = date.addingTimeInterval(-30 * 60)
+        history.removeAll { $0.date < cutoff }
+    }
+
+    private func handleNotificationTransitions(_ state: DaemonState?) {
+        if let state {
+            helperFailurePolls = 0
+            helperFailureNotified = false
+            if let reason = state.safetyReason,
+               reason != lastNotifiedSafetyReason {
+                lastNotifiedSafetyReason = reason
+                // A live hold transition gets the more useful dedicated
+                // notification below; avoid delivering two alerts for it.
+                if reason != "hold expired" {
+                    notify(title: "Fanknob returned to Auto", body: reason)
+                }
+            } else if state.safetyReason == nil {
+                lastNotifiedSafetyReason = nil
+            }
+            if previousHoldRemaining > 0, state.holdRemaining == 0,
+               state.mode == "auto" {
+                notify(title: "Fan hold finished",
+                       body: "The fans are back under firmware control.")
+            }
+            previousHoldRemaining = state.holdRemaining
+        } else {
+            helperFailurePolls += 1
+            if helperFailurePolls >= 3, !helperFailureNotified {
+                helperFailureNotified = true
+                notify(title: "Fanknob helper unavailable",
+                       body: "Fan control is read-only until the helper reconnects.")
+            }
+        }
+    }
+
+    func setNotificationsEnabled(_ enabled: Bool) {
+        if !enabled {
+            notificationsEnabled = false
+            UserDefaults.standard.set(false, forKey: notificationsKey)
+            return
+        }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) {
+            [weak self] granted, error in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.notificationsEnabled = granted
+                UserDefaults.standard.set(granted, forKey: notificationsKey)
+                if let error {
+                    self.controlError = "Notifications could not be enabled: \(error.localizedDescription)"
+                } else if !granted {
+                    self.controlError = "Notifications are disabled in System Settings."
+                }
+            }
+        }
+    }
+
+    private func notify(title: String, body: String) {
+        guard notificationsEnabled else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        let request = UNNotificationRequest(identifier: UUID().uuidString,
+                                            content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
+    }
+
+    // MARK: Login item
+
+    func refreshLoginItemStatus() {
+        loginItemStatus = SMAppService.mainApp.status
+        if loginItemStatus == .enabled { loginItemError = nil }
+    }
+
+    func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            if enabled {
+                if SMAppService.mainApp.status == .requiresApproval {
+                    loginItemStatus = .requiresApproval
+                    loginItemError = "macOS needs your approval before Fanknob can open at login."
+                    askedAboutLogin = true
+                    return
+                }
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+            loginItemStatus = SMAppService.mainApp.status
+            askedAboutLogin = true
+            if enabled && loginItemStatus == .requiresApproval {
+                loginItemError = "macOS needs your approval before Fanknob can open at login."
+            } else {
+                loginItemError = nil
+            }
+        } catch {
+            loginItemStatus = SMAppService.mainApp.status
+            loginItemError = "Open at login could not be changed: \(error.localizedDescription)"
+            UILog.log("launch-at-login \(enabled) failed: \(error)")
+        }
+    }
+
+    func dismissLoginOffer() {
+        askedAboutLogin = true
+        loginItemError = nil
+    }
+
+    func openLoginItemSettings() {
+        SMAppService.openSystemSettingsLoginItems()
+    }
+
+    // MARK: Curve profiles and diagnostic export
+
+    @discardableResult
+    func saveCurveProfile(id: UUID? = nil, name: String,
+                          curve: FanCurve) -> UUID? {
+        let cleaned = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return nil }
+        if let id, let index = curveProfiles.firstIndex(where: { $0.id == id }) {
+            curveProfiles[index].name = cleaned
+            curveProfiles[index].points = curve.points
+            persistCurveProfiles()
+            return id
+        }
+        if let index = curveProfiles.firstIndex(where: {
+            $0.name.localizedCaseInsensitiveCompare(cleaned) == .orderedSame
+        }) {
+            curveProfiles[index].points = curve.points
+            persistCurveProfiles()
+            return curveProfiles[index].id
+        } else {
+            let profile = CurveProfile(name: cleaned, points: curve.points)
+            curveProfiles.append(profile)
+            persistCurveProfiles()
+            return profile.id
+        }
+    }
+
+    func deleteCurveProfile(_ profile: CurveProfile) {
+        curveProfiles.removeAll { $0.id == profile.id }
+        persistCurveProfiles()
+    }
+
+    private func persistCurveProfiles() {
+        if let data = try? JSONEncoder().encode(curveProfiles) {
+            UserDefaults.standard.set(data, forKey: curveProfilesKey)
+        }
+    }
+
+    func exportCurveProfile(name: String, curve: FanCurve) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "\(name.isEmpty ? "fanknob-curve" : name).json"
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let profile = CurveProfile(name: name.isEmpty ? "Custom" : name,
+                                   points: curve.points)
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(profile).write(to: url, options: .atomic)
+        } catch {
+            controlError = "Curve export failed: \(error.localizedDescription)"
+        }
+    }
+
+    func importCurveProfile() -> CurveProfile? {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        do {
+            let profile = try JSONDecoder().decode(
+                CurveProfile.self, from: Data(contentsOf: url))
+            guard FanCurve(profile.points) != nil else {
+                controlError = "The imported curve is not safe or valid."
+                return nil
+            }
+            return profile
+        } catch {
+            controlError = "Curve import failed: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    func exportDiagnostics() {
+        struct DiagnosticFan: Codable {
+            let index: Int
+            let actualRPM: Double
+            let minimumRPM: Double
+            let maximumRPM: Double
+            let managed: Bool
+        }
+        struct Diagnostic: Codable {
+            let version: String
+            let daemonVersion: String?
+            let generatedAt: Date
+            let chip: String
+            let macOS: String
+            let fans: [DiagnosticFan]
+            let cpuCelsius: Double?
+            let gpuCelsius: Double?
+            let sensorGroups: [String: Int]
+            let daemon: DaemonState?
+            let recentErrors: [String]
+        }
+        var groups: [String: Int] = [:]
+        for sensor in sensors { groups[String(sensor.key.prefix(2)), default: 0] += 1 }
+        let diagnostic = Diagnostic(
+            version: fanknobVersion,
+            daemonVersion: lastDaemonState?.daemonVersion,
+            generatedAt: Date(),
+            chip: chip,
+            macOS: ProcessInfo.processInfo.operatingSystemVersionString,
+            fans: fans.map {
+                DiagnosticFan(index: $0.index, actualRPM: $0.actual,
+                              minimumRPM: $0.min, maximumRPM: $0.max,
+                              managed: $0.managed)
+            },
+            cpuCelsius: cpu,
+            gpuCelsius: gpu,
+            sensorGroups: groups,
+            daemon: lastDaemonState,
+            recentErrors: [controlError, safetyReason].compactMap { $0 }
+        )
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "fanknob-diagnostics.json"
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.dateEncodingStrategy = .iso8601
+            try encoder.encode(diagnostic).write(to: url, options: .atomic)
+        } catch {
+            controlError = "Diagnostic export failed: \(error.localizedDescription)"
+        }
     }
 }

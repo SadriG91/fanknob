@@ -134,6 +134,7 @@ enum Shots {
 // keeps the video rectangular and opaque (and so a few hundred KB rather than
 // the several MB an alpha-preserving animated PNG would cost).
 
+@MainActor
 private enum Reel {
     static let fps = 30
     static let scale: CGFloat = 2
@@ -142,7 +143,7 @@ private enum Reel {
     /// so a drag can be interpolated across its frames.
     struct Beat {
         let seconds: Double
-        let apply: (FanModel, Double) -> Void
+        let apply: @MainActor (FanModel, Double) -> Void
     }
 
     static let script: [Beat] = [
@@ -377,9 +378,9 @@ private enum Reel {
 
         func finish() -> Bool {
             input.markAsFinished()
-            var done = false
-            writer.finishWriting { done = true }
-            while !done {
+            let finished = DispatchSemaphore(value: 0)
+            writer.finishWriting { finished.signal() }
+            while finished.wait(timeout: .now()) == .timedOut {
                 RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
             }
             return writer.status == .completed
@@ -396,7 +397,6 @@ private extension FanModel {
     static var automatic: FanModel {
         let model = FanModel(fixture: ())
         model.popoverShown = true   // the speed slider's easing is paused otherwise
-        model.askedAboutLogin = true   // keep the first-run offer out of the docs
         model.fans = [
             Fan(index: 0, actual: 3132, min: 2317, max: 6800, target: 3132, managed: false),
             Fan(index: 1, actual: 3383, min: 2317, max: 6800, target: 3383, managed: false),
@@ -412,7 +412,6 @@ private extension FanModel {
     static var followingCurve: FanModel {
         let model = FanModel(fixture: ())
         model.popoverShown = true   // the speed slider's easing is paused otherwise
-        model.askedAboutLogin = true   // keep the first-run offer out of the docs
         model.fans = [
             Fan(index: 0, actual: 4697, min: 2317, max: 6800, target: 4697, managed: true),
             Fan(index: 1, actual: 4686, min: 2317, max: 6800, target: 4686, managed: true),

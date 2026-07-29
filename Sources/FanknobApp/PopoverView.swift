@@ -45,6 +45,7 @@ struct GaugeBar: View {
     var value: Double
     var tint: Color
     var height: CGFloat = 8
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         GeometryReader { geo in
@@ -57,7 +58,7 @@ struct GaugeBar: View {
             }
         }
         .frame(height: height)
-        .animation(.easeOut(duration: 0.28), value: value)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.28), value: value)
     }
 }
 
@@ -87,15 +88,24 @@ struct PopoverView: View {
 
     var body: some View {
         Group {
-            if showingHelp {
+            if model.showCurveEditor {
+                CurveEditorView(model: model) { model.showCurveEditor = false }
+            } else if showingHelp {
                 HelpView { showingHelp = false }
             } else {
                 VStack(alignment: .leading, spacing: 14) {
                     HeaderSection(model: model) { showingHelp = true }
+                    if let error = model.controlError {
+                        ErrorBanner(message: error) { model.controlError = nil }
+                    }
                     Divider()
                     TempsSection(model: model)
                     Divider()
                     FansSection(model: model)
+                    if model.history.count >= 2 {
+                        Divider()
+                        HistorySection(model: model)
+                    }
                     Divider()
                     ControlSection(model: model)
                     Divider()
@@ -108,8 +118,27 @@ struct PopoverView: View {
             }
         }
         .padding(16)
-        .frame(width: 320)
+        .frame(width: model.showCurveEditor ? 420 : 320)
         .onAppear { model.popoverOpened() }   // fresh data the moment it opens
+    }
+}
+
+private struct ErrorBanner: View {
+    let message: String
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 7) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text(message).font(.caption).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            Button(action: dismiss) { Image(systemName: "xmark") }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Dismiss error")
+        }
+        .padding(8)
+        .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 7))
     }
 }
 
@@ -153,11 +182,13 @@ private struct SpinningFanIcon: View {
     /// MenuBarExtra(.window) keeps this view alive while the popover is
     /// closed, so the timeline must be paused explicitly or it ticks forever.
     var paused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var angle = 0.0
     @State private var lastTick: Date?
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: paused)) { context in
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0,
+                                paused: paused || reduceMotion)) { context in
             Image(systemName: "fanblades")
                 .foregroundStyle(tint)
                 .font(.system(size: 15, weight: .medium))
@@ -390,6 +421,8 @@ private struct ControlSection: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            .accessibilityLabel("Fan control mode")
+            .accessibilityValue(model.mode.rawValue)
             .frame(maxWidth: .infinity)
             .disabled(!model.canWrite)
 
@@ -455,17 +488,20 @@ private struct SmoothSlider: View {
     @Bindable var model: FanModel
     @State private var shown = 0.0
     @State private var lastTick: Date?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var settled: Bool { abs(model.displayKnob - shown) < 0.1 }
 
     private var binding: Binding<Double> {
-        Binding(get: { model.mode == .manual ? model.knob : shown },
+        Binding(get: {
+                    model.mode == .manual || reduceMotion ? model.displayKnob : shown
+                },
                 set: { if model.mode == .manual { model.knob = $0; shown = $0 } })
     }
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 60.0,
-                                paused: !model.popoverShown || model.editing
+                                paused: reduceMotion || !model.popoverShown || model.editing
                                         || model.mode == .manual || settled)) { context in
             Slider(value: binding, in: 0...100) { editing in
                 model.editing = editing
@@ -489,6 +525,8 @@ private struct SmoothSlider: View {
             // poll landing mid-click can't cancel anything.
             .disabled(!model.canWrite || model.mode != .manual)
             .help(model.mode == .manual ? "" : "Switch to Manual to set the speed yourself")
+            .accessibilityLabel("Fan speed")
+            .accessibilityValue("\(Int(model.displayKnob)) percent")
         }
     }
 }
@@ -513,6 +551,8 @@ private struct PerFanSlider: View {
             .onChange(of: model.fanKnobs[index] ?? 0) { _, _ in model.liveApply(fan: index) }
             .tint(activeAccent)
             .disabled(!model.canWrite)
+            .accessibilityLabel("Fan \(index) speed")
+            .accessibilityValue("\(Int(model.fanKnobs[index] ?? 0)) percent")
             Text("\(Int(model.fanKnobs[index] ?? 0))%")
                 .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                 .frame(width: 32, alignment: .trailing)
@@ -538,7 +578,16 @@ private struct PresetRow: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            .accessibilityLabel("Temperature curve preset")
             .disabled(!model.canWrite)
+            Button {
+                model.showCurveEditor = true
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+            }
+            .buttonStyle(.plain)
+            .help("Edit a custom curve")
+            .accessibilityLabel("Edit custom curve")
         }
         .help("Fan speed follows CPU temperature automatically")
     }
@@ -560,6 +609,7 @@ private struct HoldRow: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            .accessibilityLabel("Manual hold duration")
             .onChange(of: model.holdSeconds) { _, _ in
                 if model.mode == .manual { model.applyKnob() }
             }
@@ -588,6 +638,397 @@ private struct HoldLabel: View {
     }
 }
 
+// MARK: - Thirty-minute history
+
+private struct HistorySection: View {
+    var model: FanModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text("Last 30 minutes").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Text("\(model.history.count) samples")
+                    .font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+            }
+            HistoryRow(label: "CPU", tint: .orange,
+                       values: model.history.map(\.cpu), maximum: 110,
+                       suffix: "°")
+            HistoryRow(label: "RPM", tint: activeAccent,
+                       values: model.history.map(\.fanRPM),
+                       maximum: max(1, model.fans.map(\.max).max() ?? 7000),
+                       suffix: "")
+            HistoryRow(label: "Knob", tint: .secondary,
+                       values: model.history.map(\.fanPercent), maximum: 100,
+                       suffix: "%")
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Thirty minute temperature and fan history")
+    }
+}
+
+private struct HistoryRow: View {
+    let label: String
+    let tint: Color
+    let values: [Double?]
+    let maximum: Double
+    let suffix: String
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Text(label).font(.system(size: 9)).foregroundStyle(.secondary)
+                .frame(width: 28, alignment: .leading)
+            Sparkline(values: values, maximum: maximum, tint: tint)
+                .frame(height: 18)
+            if let latest = values.last ?? nil {
+                Text("\(Int(latest.rounded()))\(suffix)")
+                    .font(.system(size: 9, design: .monospaced))
+                    .frame(width: 36, alignment: .trailing)
+            }
+        }
+    }
+}
+
+private struct Sparkline: View {
+    let values: [Double?]
+    let maximum: Double
+    let tint: Color
+
+    var body: some View {
+        Canvas { context, size in
+            let points = values.enumerated().compactMap { index, value -> CGPoint? in
+                guard let value else { return nil }
+                let denominator = max(1, values.count - 1)
+                return CGPoint(
+                    x: CGFloat(index) / CGFloat(denominator) * size.width,
+                    y: size.height * (1 - CGFloat((value / maximum).clamped(0, 1)))
+                )
+            }
+            guard let first = points.first else { return }
+            var path = Path()
+            path.move(to: first)
+            for point in points.dropFirst() { path.addLine(to: point) }
+            context.stroke(path, with: .color(tint), lineWidth: 1.5)
+        }
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 3))
+    }
+}
+
+// MARK: - Custom curve editor
+
+private struct CurveEditorView: View {
+    @Bindable var model: FanModel
+    let onClose: () -> Void
+    @State private var name = "Custom"
+    @State private var points: [FanCurve.Point]
+    @State private var selectedPoint = 0
+    @State private var profileID: UUID?
+
+    init(model: FanModel, onClose: @escaping () -> Void) {
+        self.model = model
+        self.onClose = onClose
+        let initial = model.lastDaemonState?.curve.flatMap(FanCurve.parse)
+            ?? model.preset.curve
+        _points = State(initialValue: initial.points)
+    }
+
+    private var curve: FanCurve? { FanCurve(points) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Button(action: onClose) {
+                    Label("Back", systemImage: "chevron.left")
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.cancelAction)
+                Spacer()
+                Text("Custom curve").font(.headline)
+                Spacer()
+                Button("Apply") {
+                    if let curve { model.applyCustomCurve(curve); onClose() }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(curve == nil)
+                .keyboardShortcut(.defaultAction)
+            }
+
+            CurveGraph(points: $points, selectedPoint: $selectedPoint,
+                       currentTemperature: model.cpu)
+                .frame(height: 180)
+                .accessibilityLabel("Custom temperature curve")
+                .accessibilityHint("Drag points to change temperature and fan speed")
+
+            HStack {
+                Text(points.map {
+                    "\(Int($0.celsius.rounded()))°:\(Int($0.knob.rounded()))%"
+                }.joined(separator: "  "))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                Spacer()
+                Button {
+                    addPoint()
+                } label: { Image(systemName: "plus") }
+                    .disabled(points.count >= FanCurve.maximumPointCount)
+                    .help("Add curve point")
+                    .accessibilityLabel("Add curve point")
+                Button {
+                    guard points.count > 2 else { return }
+                    points.remove(at: selectedPoint)
+                    selectedPoint = min(selectedPoint, points.count - 1)
+                } label: { Image(systemName: "minus") }
+                    .disabled(points.count <= 2)
+                    .help("Remove selected curve point")
+                    .accessibilityLabel("Remove selected curve point")
+            }
+            .buttonStyle(.borderless)
+
+            if points.indices.contains(selectedPoint) {
+                HStack(spacing: 12) {
+                    Stepper(
+                        value: temperatureBinding(for: selectedPoint),
+                        in: temperatureBounds(for: selectedPoint),
+                        step: 1
+                    ) {
+                        Text("Point \(selectedPoint + 1): "
+                             + "\(Int(points[selectedPoint].celsius)) °C")
+                    }
+                    Stepper(
+                        value: speedBinding(for: selectedPoint),
+                        in: speedBounds(for: selectedPoint),
+                        step: 1
+                    ) {
+                        Text("\(Int(points[selectedPoint].knob))%")
+                    }
+                }
+                .font(.caption.monospacedDigit())
+                .accessibilityElement(children: .contain)
+            }
+
+            if let temperature = model.cpu, let curve {
+                HStack {
+                    Label("\(Int(temperature.rounded())) °C now",
+                          systemImage: "thermometer.medium")
+                    Spacer()
+                    Text("curve requests \(Int(curve.knob(at: temperature).rounded()))%")
+                        .foregroundStyle(activeAccent)
+                }
+                .font(.caption)
+            }
+
+            Divider()
+
+            HStack {
+                TextField("Profile name", text: $name)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("Curve profile name")
+                Button("Save") {
+                    if let curve {
+                        profileID = model.saveCurveProfile(
+                            id: profileID, name: name, curve: curve)
+                    }
+                }
+                .disabled(curve == nil || name.trimmingCharacters(in: .whitespaces).isEmpty)
+                Menu("Profiles") {
+                    if model.curveProfiles.isEmpty {
+                        Text("No saved profiles")
+                    }
+                    ForEach(model.curveProfiles) { profile in
+                        Button(profile.name) {
+                            if let loaded = FanCurve(profile.points) {
+                                name = profile.name
+                                points = loaded.points
+                                selectedPoint = 0
+                                profileID = profile.id
+                            }
+                        }
+                    }
+                    if !model.curveProfiles.isEmpty {
+                        Divider()
+                        Menu("Delete") {
+                            ForEach(model.curveProfiles) { profile in
+                                Button(profile.name, role: .destructive) {
+                                    model.deleteCurveProfile(profile)
+                                }
+                            }
+                        }
+                    }
+                }
+                Menu {
+                    Button("Import…") {
+                        if let profile = model.importCurveProfile(),
+                           let loaded = FanCurve(profile.points) {
+                            name = profile.name
+                            points = loaded.points
+                            selectedPoint = 0
+                            profileID = nil
+                        }
+                    }
+                    Button("Export…") {
+                        if let curve { model.exportCurveProfile(name: name, curve: curve) }
+                    }
+                    .disabled(curve == nil)
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .accessibilityLabel("Curve import and export")
+            }
+        }
+    }
+
+    private func addPoint() {
+        guard points.count < FanCurve.maximumPointCount,
+              let curve else { return }
+        let gaps = zip(points.indices, points.indices.dropFirst())
+        guard let pair = gaps.max(by: {
+            points[$0.1].celsius - points[$0.0].celsius
+                < points[$1.1].celsius - points[$1.0].celsius
+        }) else { return }
+        let temperature = (points[pair.0].celsius + points[pair.1].celsius) / 2
+        let point = FanCurve.Point(celsius: temperature,
+                                   knob: curve.knob(at: temperature))
+        points.insert(point, at: pair.1)
+        selectedPoint = pair.1
+    }
+
+    private func temperatureBounds(for index: Int) -> ClosedRange<Double> {
+        let lower = index == 0
+            ? FanCurve.temperatureRange.lowerBound : points[index - 1].celsius + 1
+        let upper = index == points.count - 1
+            ? FanCurve.temperatureRange.upperBound : points[index + 1].celsius - 1
+        return lower...upper
+    }
+
+    private func speedBounds(for index: Int) -> ClosedRange<Double> {
+        let lower = index == 0 ? 0 : points[index - 1].knob
+        let upper = index == points.count - 1 ? 100 : points[index + 1].knob
+        return lower...upper
+    }
+
+    private func temperatureBinding(for index: Int) -> Binding<Double> {
+        Binding(
+            get: { points[index].celsius },
+            set: {
+                points[index] = FanCurve.Point(celsius: $0,
+                                                knob: points[index].knob)
+            }
+        )
+    }
+
+    private func speedBinding(for index: Int) -> Binding<Double> {
+        Binding(
+            get: { points[index].knob },
+            set: {
+                points[index] = FanCurve.Point(celsius: points[index].celsius,
+                                                knob: $0)
+            }
+        )
+    }
+}
+
+private struct CurveGraph: View {
+    @Binding var points: [FanCurve.Point]
+    @Binding var selectedPoint: Int
+    let currentTemperature: Double?
+
+    var body: some View {
+        GeometryReader { geometry in
+            let size = geometry.size
+            ZStack {
+                Canvas { context, canvas in
+                    for fraction in [0.25, 0.5, 0.75] {
+                        var grid = Path()
+                        grid.move(to: CGPoint(x: 0, y: canvas.height * fraction))
+                        grid.addLine(to: CGPoint(x: canvas.width,
+                                                 y: canvas.height * fraction))
+                        context.stroke(grid, with: .color(.secondary.opacity(0.15)),
+                                       lineWidth: 0.5)
+                    }
+                    if let currentTemperature {
+                        let x = xPosition(currentTemperature, width: canvas.width)
+                        var marker = Path()
+                        marker.move(to: CGPoint(x: x, y: 0))
+                        marker.addLine(to: CGPoint(x: x, y: canvas.height))
+                        context.stroke(marker, with: .color(.orange.opacity(0.65)),
+                                       style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                    }
+                    guard let first = points.first else { return }
+                    var curvePath = Path()
+                    curvePath.move(to: position(first, size: canvas))
+                    for point in points.dropFirst() {
+                        curvePath.addLine(to: position(point, size: canvas))
+                    }
+                    context.stroke(curvePath, with: .color(activeAccent), lineWidth: 2)
+                }
+
+                ForEach(points.indices, id: \.self) { index in
+                    Circle()
+                        .fill(index == selectedPoint ? activeAccent : Color(nsColor: .windowBackgroundColor))
+                        .stroke(activeAccent, lineWidth: 2)
+                        .frame(width: 13, height: 13)
+                        .position(position(points[index], size: size))
+                        .gesture(DragGesture(coordinateSpace: .named("curve-graph"))
+                            .onChanged { dragPoint(index, location: $0.location,
+                                                   size: size) })
+                        .onTapGesture { selectedPoint = index }
+                        .accessibilityLabel("Curve point \(index + 1)")
+                        .accessibilityValue(
+                            "\(Int(points[index].celsius)) degrees, \(Int(points[index].knob)) percent")
+                }
+            }
+            .coordinateSpace(name: "curve-graph")
+            .background(Color.primary.opacity(0.04),
+                        in: RoundedRectangle(cornerRadius: 8))
+            .overlay(alignment: .topLeading) {
+                Text("100%").font(.system(size: 8)).foregroundStyle(.tertiary)
+                    .padding(5)
+            }
+            .overlay(alignment: .bottomLeading) {
+                Text("20°C").font(.system(size: 8)).foregroundStyle(.tertiary)
+                    .padding(5)
+            }
+            .overlay(alignment: .bottomTrailing) {
+                Text("110°C").font(.system(size: 8)).foregroundStyle(.tertiary)
+                    .padding(5)
+            }
+        }
+    }
+
+    private func position(_ point: FanCurve.Point, size: CGSize) -> CGPoint {
+        CGPoint(x: xPosition(point.celsius, width: size.width),
+                y: size.height * (1 - CGFloat(point.knob / 100)))
+    }
+
+    private func xPosition(_ temperature: Double, width: CGFloat) -> CGFloat {
+        CGFloat((temperature - FanCurve.temperatureRange.lowerBound)
+                / (FanCurve.temperatureRange.upperBound
+                   - FanCurve.temperatureRange.lowerBound)) * width
+    }
+
+    private func dragPoint(_ index: Int, location: CGPoint, size: CGSize) {
+        guard size.width > 0, size.height > 0 else { return }
+        let rawTemperature = FanCurve.temperatureRange.lowerBound
+            + Double((location.x / size.width).clamped(0, 1))
+            * (FanCurve.temperatureRange.upperBound
+               - FanCurve.temperatureRange.lowerBound)
+        let rawKnob = Double((1 - location.y / size.height).clamped(0, 1)) * 100
+        let minimumTemperature = index == 0
+            ? FanCurve.temperatureRange.lowerBound : points[index - 1].celsius + 1
+        let maximumTemperature = index == points.count - 1
+            ? FanCurve.temperatureRange.upperBound : points[index + 1].celsius - 1
+        let minimumKnob = index == 0 ? 0 : points[index - 1].knob
+        let maximumKnob = index == points.count - 1 ? 100 : points[index + 1].knob
+        points[index] = FanCurve.Point(
+            celsius: rawTemperature.clamped(minimumTemperature, maximumTemperature).rounded(),
+            knob: rawKnob.clamped(minimumKnob, maximumKnob).rounded()
+        )
+        selectedPoint = index
+    }
+}
+
 // MARK: - Launch at login
 
 /// A one-time offer to keep fanknob in the menu bar.
@@ -606,18 +1047,26 @@ private struct LoginOffer: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("Keep fanknob in your menu bar?")
                     .font(.subheadline)
-                Text("Otherwise it's gone after a restart.")
+                Text(model.loginItemError ?? "Otherwise it's gone after a restart.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
             HStack(spacing: 10) {
                 Spacer()
-                Button("Not now") { model.askedAboutLogin = true }
+                Button("Not now") { model.dismissLoginOffer() }
                     .buttonStyle(.plain)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Button("Keep it") { model.launchAtLogin = true }
+                if model.loginItemStatus == .requiresApproval {
+                    Button("Open Settings") { model.openLoginItemSettings() }
+                        .controlSize(.small)
+                        .buttonStyle(.borderedProminent)
+                } else {
+                    Button(model.loginItemError == nil ? "Keep it" : "Try again") {
+                        model.setLaunchAtLogin(true)
+                    }
                     .controlSize(.small)
                     .buttonStyle(.borderedProminent)
+                }
             }
         }
     }
@@ -672,7 +1121,14 @@ private struct StatusSection: View {
             Spacer()
 
             Menu {
-                Toggle("Open at login", isOn: loginBinding)
+                if model.loginItemStatus == .requiresApproval {
+                    Button("Allow Open at Login…") { model.openLoginItemSettings() }
+                } else {
+                    Toggle("Open at login", isOn: loginBinding)
+                }
+                Toggle("Safety notifications",
+                       isOn: Binding(get: { model.notificationsEnabled },
+                                     set: { model.setNotificationsEnabled($0) }))
                 if model.daemonPresent {
                     Picker("Thermal watchdog", selection: watchdogBinding) {
                         Text("Off").tag(Double?.none)
@@ -682,6 +1138,7 @@ private struct StatusSection: View {
                     }
                 }
                 Divider()
+                Button("Export diagnostics…") { model.exportDiagnostics() }
                 Button("Quit fanknob") { NSApp.terminate(nil) }
             } label: {
                 Image(systemName: "gearshape")
