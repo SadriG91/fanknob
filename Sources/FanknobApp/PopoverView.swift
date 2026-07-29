@@ -139,8 +139,18 @@ private struct UpdateBanner: View {
     let state: FanModel.UpdateCheck
     let dismiss: () -> Void
 
+    /// Icon in a fixed gutter, sized to the caption text it sits beside —
+    /// at the default body size the symbols read as oversized and off-center
+    /// against a single caption line.
+    private func icon(_ name: String, _ tint: Color) -> some View {
+        Image(systemName: name)
+            .font(.caption)
+            .foregroundStyle(tint)
+            .frame(width: 16, alignment: .center)
+    }
+
     var body: some View {
-        HStack(alignment: .top, spacing: 7) {
+        HStack(alignment: .center, spacing: 7) {
             switch state {
             case .checking:
                 ProgressView().controlSize(.small).frame(width: 16)
@@ -151,14 +161,12 @@ private struct UpdateBanner: View {
                     .font(.caption)
                     .fixedSize(horizontal: false, vertical: true)
             case .upToDate:
-                Image(systemName: "checkmark.circle")
-                    .foregroundStyle(.secondary)
+                icon("checkmark.circle", .secondary)
                 Text("You're up to date (\(fanknobVersion)).")
                     .font(.caption)
                     .fixedSize(horizontal: false, vertical: true)
             case .available(let version, let url, let pkg):
-                Image(systemName: "arrow.down.circle.fill")
-                    .foregroundStyle(activeAccent)
+                icon("arrow.down.circle.fill", activeAccent)
                 Text("Version \(version) is available (installed: \(fanknobVersion)).")
                     .font(.caption)
                     .fixedSize(horizontal: false, vertical: true)
@@ -175,17 +183,18 @@ private struct UpdateBanner: View {
                         .foregroundStyle(activeAccent)
                 }
             case .failed(let message):
-                Image(systemName: "wifi.exclamationmark")
-                    .foregroundStyle(.orange)
+                icon("wifi.exclamationmark", .orange)
                 Text("Update check failed: \(message)")
                     .font(.caption)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if case .available = state {} else { Spacer(minLength: 4) }
             if state != .checking && state != .downloading {
-                Button(action: dismiss) { Image(systemName: "xmark") }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Dismiss update status")
+                Button(action: dismiss) {
+                    Image(systemName: "xmark").font(.caption)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Dismiss update status")
             }
         }
         .padding(8)
