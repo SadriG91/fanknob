@@ -108,9 +108,10 @@ struct PopoverView: View {
                     Divider()
                     ControlSection(model: model)
                     Divider()
+                    // No divider after the offer: the card's own background
+                    // separates it from the status row.
                     if model.shouldOfferLogin {
                         LoginOffer(model: model)
-                        Divider()
                     }
                     StatusSection(model: model)
                 }
@@ -1068,15 +1069,29 @@ private struct CurveGraph: View {
 private struct LoginOffer: View {
     @Bindable var model: FanModel
 
+    private var failed: Bool { model.loginItemError != nil }
+
     var body: some View {
-        // Text on its own row: at 320 pt wide, sharing a line with two buttons
-        // wrapped the question onto four cramped lines.
-        VStack(alignment: .leading, spacing: 9) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Keep fanknob in your menu bar?")
-                    .font(.subheadline)
-                Text(model.loginItemError ?? "Otherwise it's gone after a restart.")
-                    .font(.caption2).foregroundStyle(.secondary)
+        // Styled like the app's other inset panels (ErrorBanner, the graph
+        // backgrounds): icon column + caption text on a tinted rounded card,
+        // so the one-time offer reads as part of the popover rather than a
+        // banner dropped on top of it. Text on its own row: at 320 pt wide,
+        // sharing a line with two buttons wrapped it onto four cramped lines.
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 9) {
+                Image(systemName: failed ? "exclamationmark.triangle.fill" : "pin")
+                    .font(.system(size: 12))
+                    .foregroundStyle(failed ? Color.orange : activeAccent)
+                    .frame(width: 16, alignment: .center)
+                    .padding(.top, 1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Keep fanknob in your menu bar?")
+                        .font(.subheadline.weight(.semibold))
+                    Text(model.loginItemError ?? "Otherwise it's gone after a restart.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             HStack(spacing: 10) {
                 Spacer()
@@ -1089,7 +1104,7 @@ private struct LoginOffer: View {
                         .controlSize(.small)
                         .buttonStyle(.borderedProminent)
                 } else {
-                    Button(model.loginItemError == nil ? "Keep it" : "Try again") {
+                    Button(failed ? "Try again" : "Keep it") {
                         model.setLaunchAtLogin(true)
                     }
                     .controlSize(.small)
@@ -1097,6 +1112,9 @@ private struct LoginOffer: View {
                 }
             }
         }
+        .padding(10)
+        .background(Color.primary.opacity(0.04),
+                    in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
