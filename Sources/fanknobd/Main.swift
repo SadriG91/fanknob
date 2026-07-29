@@ -65,12 +65,18 @@ struct Fanknobd {
         do { try smc.open() } catch { log("\(error)"); exit(1) }
 
         let engine = DaemonEngine(hardware: SMCFanHardware(smc: smc), logger: log)
-        smcQueue.sync { engine.start() }
+        smcQueue.sync { @Sendable in engine.start() }
 
+        // The dispatch-source handlers below are @Sendable on purpose. Under
+        // Swift 6, @main's main() is implicitly @MainActor, and a plain
+        // closure formed here inherits that isolation — the runtime then
+        // enforces it when the source fires on smcQueue and kills the daemon
+        // with EXC_BREAKPOINT (dispatch_assert_queue_fail) on the first tick.
+        // @Sendable opts the closure out of the inherited isolation.
         let timer = DispatchSource.makeTimerSource(queue: smcQueue)
         timer.schedule(deadline: .now() + .seconds(tickSeconds),
                        repeating: .seconds(tickSeconds))
-        timer.setEventHandler { engine.tick() }
+        timer.setEventHandler { @Sendable in engine.tick() }
         timer.resume()
 
         // SO_NOSIGPIPE protects individual sockets; ignoring SIGPIPE is a
@@ -81,7 +87,7 @@ struct Fanknobd {
         let signalSources = [SIGTERM, SIGINT].map { signalNumber in
             let source = DispatchSource.makeSignalSource(signal: signalNumber,
                                                          queue: smcQueue)
-            source.setEventHandler {
+            source.setEventHandler { @Sendable in
                 engine.shutdown()
                 unlink(fanknobdSocketPath)
                 exit(0)
