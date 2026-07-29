@@ -52,7 +52,7 @@ func bar(_ frac: Double, width: Int, color: Int) -> String {
 
 // MARK: - Terminal raw mode (restored via signal handlers + defer)
 
-var savedTermios = termios()
+nonisolated(unsafe) var savedTermios = termios()
 
 func restoreTerminal() {
     tcsetattr(STDIN_FILENO, TCSANOW, &savedTermios)
@@ -84,14 +84,46 @@ func waitKey(timeoutMs: Int) -> [UInt8] {
 
 // MARK: - Applying writes
 
-func applyKnob(_ smc: SMC, _ pct: Double, seconds: Int = 0) {
-    if geteuid() == 0 { for i in 0..<fanCount(smc) { _ = try? setFanKnob(smc, i, pct: pct) } }
-    else { _ = sendToDaemon(seconds > 0 ? "set \(Int(pct)) \(seconds)" : "set \(Int(pct))") }
+@discardableResult
+func applyKnob(_ smc: SMC, _ pct: Double, seconds: Int = 0) -> Bool {
+    let command = seconds > 0 ? "set \(Int(pct)) \(seconds)" : "set \(Int(pct))"
+    switch sendToDaemon(command) {
+    case .ok:
+        return true
+    case .failed:
+        return false
+    case .unavailable:
+        guard geteuid() == 0 else { return false }
+        var applied: [Int] = []
+        for index in 0..<fanCount(smc) {
+            do {
+                _ = try setFanKnob(smc, index, pct: pct)
+                applied.append(index)
+            } catch {
+                for written in applied { try? setFanAuto(smc, written) }
+                return false
+            }
+        }
+        return true
+    }
 }
 
-func applyAutoTUI(_ smc: SMC) {
-    if geteuid() == 0 { for i in 0..<fanCount(smc) { try? setFanAuto(smc, i) } }
-    else { _ = sendToDaemon("auto") }
+@discardableResult
+func applyAutoTUI(_ smc: SMC) -> Bool {
+    switch sendToDaemon("auto") {
+    case .ok:
+        return true
+    case .failed:
+        return false
+    case .unavailable:
+        guard geteuid() == 0 else { return false }
+        var success = true
+        for index in 0..<fanCount(smc) {
+            do { try setFanAuto(smc, index) }
+            catch { success = false }
+        }
+        return success
+    }
 }
 
 // MARK: - Machine label
@@ -102,7 +134,9 @@ func sysctlString(_ name: String) -> String? {
     guard size > 0 else { return nil }
     var buf = [CChar](repeating: 0, count: size)
     sysctlbyname(name, &buf, &size, nil, 0)
-    return String(cString: buf)
+    return String(decoding: buf.prefix { $0 != 0 }.map {
+        UInt8(bitPattern: $0)
+    }, as: UTF8.self)
 }
 
 // MARK: - Rendering
@@ -189,6 +223,9 @@ func renderFrame(_ smc: SMC, tempKeys: [UInt32], knob: Double, canWrite: Bool,
             modeText = "\(Ansi.dim)auto\(Ansi.reset)"
         }
         if d.watchdogTripped { modeText += "  \(Ansi.fg(208))⚠ watchdog\(Ansi.reset)" }
+        if let reason = d.safetyReason {
+            modeText += "  \(Ansi.fg(208))⚠ \(reason)\(Ansi.reset)"
+        }
         L.append(" \(Ansi.fg(250))MODE\(Ansi.reset) \(modeText)")
     }
 
@@ -228,8 +265,10 @@ func runTUI(_ smc: SMC) {
 
     func arm() {
         guard canWrite else { return }
-        applyKnob(smc, knob, seconds: holdSeconds)
-        holdDeadline = holdSeconds > 0 ? Date().addingTimeInterval(Double(holdSeconds)) : nil
+        if applyKnob(smc, knob, seconds: holdSeconds) {
+            holdDeadline = holdSeconds > 0
+                ? Date().addingTimeInterval(Double(holdSeconds)) : nil
+        }
     }
 
     var running = true

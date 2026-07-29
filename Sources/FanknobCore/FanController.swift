@@ -14,10 +14,12 @@ public func chipName() -> String {
     guard size > 0 else { return "Apple Silicon" }
     var buf = [CChar](repeating: 0, count: size)
     sysctlbyname("machdep.cpu.brand_string", &buf, &size, nil, 0)
-    return String(cString: buf)
+    return String(decoding: buf.prefix { $0 != 0 }.map {
+        UInt8(bitPattern: $0)
+    }, as: UTF8.self)
 }
 
-public struct Snapshot {
+public struct Snapshot: Sendable {
     public let fans: [Fan]
     public let temps: TempReport
     public init(fans: [Fan], temps: TempReport) {
@@ -26,7 +28,7 @@ public struct Snapshot {
 }
 
 /// How much of the hardware to read in one snapshot.
-public enum SnapshotScope {
+public enum SnapshotScope: Sendable {
     /// Everything: all temp sensors + fans. ~30 ms of SMC calls.
     case full
     /// Just enough for a menu-bar readout: the CPU-cluster sensors (falling
@@ -42,6 +44,7 @@ public final class FanController {
 
     /// True if the SMC opened successfully (reads are possible).
     public let opened: Bool
+    public private(set) var lastError: String?
 
     public init() {
         var ok = false
@@ -68,30 +71,42 @@ public final class FanController {
     /// auto-revert. `fan: nil` means every fan.
     @discardableResult
     public func setKnob(_ pct: Double, fan: Int? = nil, holdSeconds: Int = 0) -> Bool {
+        guard pct.isFinite, (0...maximumHoldSeconds).contains(holdSeconds) else {
+            lastError = "Invalid fan speed or hold duration."
+            return false
+        }
         if geteuid() == 0 && !daemonReachable() {
             // Direct write; the daemon isn't there to keep any curve running.
             let targets = fan.map { [$0] } ?? Array(0..<fanCount(smc))
-            for i in targets { _ = try? setFanKnob(smc, i, pct: pct) }
+            var applied: [Int] = []
+            for index in targets {
+                do {
+                    _ = try setFanKnob(smc, index, pct: pct)
+                    applied.append(index)
+                } catch {
+                    for written in applied { try? setFanAuto(smc, written) }
+                    lastError = "Fan \(index) write failed; restored automatic control."
+                    return false
+                }
+            }
+            lastError = nil
             return true
         }
         var cmd = fan.map { "setfan \($0) \(Int(pct))" } ?? "set \(Int(pct))"
         if holdSeconds > 0 { cmd += " \(holdSeconds)" }
-        if case .ok = sendToDaemon(cmd) { return true }
-        return false
+        return runDaemonCommand(cmd)
     }
 
     /// Hand the fans to a temperature curve. Requires the daemon — it's what
     /// evaluates the curve over time.
     @discardableResult
     public func setPreset(_ preset: CurvePreset) -> Bool {
-        if case .ok = sendToDaemon("preset \(preset.rawValue)") { return true }
-        return false
+        runDaemonCommand("preset \(preset.rawValue)")
     }
 
     @discardableResult
     public func setCurve(_ curve: FanCurve) -> Bool {
-        if case .ok = sendToDaemon("curve \(curve.wireFormat)") { return true }
-        return false
+        runDaemonCommand("curve \(curve.wireFormat)")
     }
 
     /// Temperature above which the daemon returns the fans to the firmware.
@@ -99,8 +114,7 @@ public final class FanController {
     @discardableResult
     public func setWatchdog(_ celsius: Double?) -> Bool {
         let arg = celsius.map { String(Int($0)) } ?? "off"
-        if case .ok = sendToDaemon("watchdog \(arg)") { return true }
-        return false
+        return runDaemonCommand("watchdog \(arg)")
     }
 
     /// What the daemon is currently doing (nil if it isn't running).
@@ -113,11 +127,40 @@ public final class FanController {
     /// root: a direct write wouldn't stop a curve the daemon is driving.
     @discardableResult
     public func auto() -> Bool {
-        if case .ok = sendToDaemon("auto") { return true }
-        if geteuid() == 0 {
-            for i in 0..<fanCount(smc) { try? setFanAuto(smc, i) }
+        switch sendToDaemon("auto") {
+        case .ok:
+            lastError = nil
             return true
+        case .failed(let message):
+            lastError = message
+            return false
+        case .unavailable:
+            break
         }
+        if geteuid() == 0 {
+            var success = true
+            for index in 0..<fanCount(smc) {
+                do { try setFanAuto(smc, index) }
+                catch { success = false }
+            }
+            lastError = success ? nil : "One or more fans could not be returned to automatic control."
+            return success
+        }
+        lastError = "The fanknob helper is not available."
         return false
+    }
+
+    private func runDaemonCommand(_ command: String) -> Bool {
+        switch sendToDaemon(command) {
+        case .ok:
+            lastError = nil
+            return true
+        case .unavailable:
+            lastError = "The fanknob helper is not available."
+            return false
+        case .failed(let message):
+            lastError = message
+            return false
+        }
     }
 }

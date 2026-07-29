@@ -1,274 +1,568 @@
-// CLI.swift — fanknob command-line client.
-//
-// Reads (status/temp/keys/tui) go straight to the SMC (no privileges). Control
-// commands go to the root daemon over a Unix socket; without a daemon, running
-// as root falls back to writing in-process (except curves, which need the
-// daemon's evaluation loop to mean anything).
+// CLI.swift — command-line client and privacy-safe diagnostics.
 
 import Foundation
 import Darwin
 import FanknobCore
 
-func knobBar(_ pct: Double) -> String {
-    let width = 10
-    let filled = Int((pct / 100 * Double(width)).rounded())
-    return String(repeating: "#", count: filled) + String(repeating: "·", count: width - filled)
+private func stderr(_ message: String) {
+    FileHandle.standardError.write(Data((message + "\n").utf8))
 }
 
-// MARK: - Reads
+func knobBar(_ percent: Double) -> String {
+    let width = 10
+    let filled = Int((percent.clamped(0, 100) / 100 * Double(width)).rounded())
+    return String(repeating: "#", count: filled)
+        + String(repeating: "·", count: width - filled)
+}
 
-func cmdStatus(_ smc: SMC) {
-    let n = fanCount(smc)
-    if n == 0 { print("No fans reported (FNum = 0).") }
-    else {
-        print("Fans: \(n)")
-        for i in 0..<n {
-            guard let f = readFan(smc, i) else { print("  fan \(i): unreadable"); continue }
+// MARK: - Machine-readable status / diagnostics
+
+private struct FanJSON: Codable {
+    let index: Int
+    let actualRPM: Double
+    let minimumRPM: Double
+    let maximumRPM: Double
+    let targetRPM: Double
+    let percent: Double
+    let managed: Bool
+
+    init(_ fan: Fan) {
+        index = fan.index
+        actualRPM = fan.actual
+        minimumRPM = fan.min
+        maximumRPM = fan.max
+        targetRPM = fan.target
+        percent = fan.knob
+        managed = fan.managed
+    }
+}
+
+private struct TemperatureJSON: Codable {
+    let cpuCelsius: Double?
+    let gpuCelsius: Double?
+    let overallCelsius: Double?
+    let sensorCount: Int
+    let groups: [String: Int]
+}
+
+private struct StatusJSON: Codable {
+    let version: String
+    let generatedAt: Date
+    let chip: String
+    let macOS: String
+    let fans: [FanJSON]
+    let temperatures: TemperatureJSON
+    let daemon: DaemonState?
+}
+
+private struct DiagnoseJSON: Codable {
+    let generatedAt: Date
+    let chip: String
+    let macOS: String
+    let cliVersion: String
+    let installedAppVersion: String?
+    let daemonVersion: String?
+    let fans: [FanJSON]
+    let temperatures: TemperatureJSON
+    let daemonMode: String?
+    let recentErrors: [String]
+}
+
+private func collectStatus(_ smc: SMC) -> StatusJSON {
+    let fans = (0..<fanCount(smc)).compactMap { readFan(smc, $0) }
+    let temperatures = readTempReport(smc)
+    var groups: [String: Int] = [:]
+    for sensor in temperatures.all {
+        let prefix = String(sensor.key.prefix(2))
+        groups[prefix, default: 0] += 1
+    }
+    let daemon: DaemonState?
+    if case .ok(let reply) = sendToDaemon("state") {
+        daemon = DaemonState.decode(reply)
+    } else {
+        daemon = nil
+    }
+    return StatusJSON(
+        version: fanknobVersion,
+        generatedAt: Date(),
+        chip: chipName(),
+        macOS: ProcessInfo.processInfo.operatingSystemVersionString,
+        fans: fans.map(FanJSON.init),
+        temperatures: TemperatureJSON(
+            cpuCelsius: temperatures.cpu,
+            gpuCelsius: temperatures.gpu,
+            overallCelsius: temperatures.overall,
+            sensorCount: temperatures.all.count,
+            groups: groups
+        ),
+        daemon: daemon
+    )
+}
+
+private func collectDiagnostics(_ smc: SMC) -> DiagnoseJSON {
+    let status = collectStatus(smc)
+    let installedAppVersion = Bundle(path: "/Applications/Fanknob.app")?
+        .object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+    return DiagnoseJSON(
+        generatedAt: status.generatedAt,
+        chip: status.chip,
+        macOS: status.macOS,
+        cliVersion: status.version,
+        installedAppVersion: installedAppVersion,
+        daemonVersion: status.daemon?.daemonVersion,
+        fans: status.fans,
+        temperatures: status.temperatures,
+        daemonMode: status.daemon?.mode,
+        recentErrors: [status.daemon?.safetyReason].compactMap { $0 }
+    )
+}
+
+@discardableResult
+private func printJSON<T: Encodable>(_ value: T) -> Bool {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+    encoder.dateEncodingStrategy = .iso8601
+    do {
+        let data = try encoder.encode(value)
+        print(String(decoding: data, as: UTF8.self))
+        return true
+    } catch {
+        stderr("Could not encode JSON: \(error)")
+        return false
+    }
+}
+
+// MARK: - Human-readable reads
+
+@discardableResult
+func cmdStatus(_ smc: SMC, json: Bool = false) -> Bool {
+    if json { return printJSON(collectStatus(smc)) }
+
+    let count = fanCount(smc)
+    if count == 0 {
+        print("No fans reported (FNum = 0).")
+    } else {
+        print("Fans: \(count)")
+        for index in 0..<count {
+            guard let fan = readFan(smc, index) else {
+                print("  fan \(index): unreadable")
+                continue
+            }
             print(String(format: "  fan %d  %4.0f rpm  [%@]  min %4.0f  max %4.0f",
-                         i, f.actual, knobBar(f.knob) as CVarArg, f.min, f.max))
+                         index, fan.actual, knobBar(fan.knob) as CVarArg,
+                         fan.min, fan.max))
             print(String(format: "         mode: %@   target %4.0f rpm  ≈ knob %3.0f%%",
-                         f.managed ? "MANUAL" : "auto", f.target, f.knob))
+                         fan.managed ? "MANUAL" : "auto", fan.target, fan.knob))
         }
     }
 
-    let t = readTempReport(smc)
-    if t.cpu != nil || t.gpu != nil || t.overall != nil {
+    let temperatures = readTempReport(smc)
+    if temperatures.cpu != nil || temperatures.gpu != nil || temperatures.overall != nil {
         var parts: [String] = []
-        if let c = t.cpu { parts.append(String(format: "CPU %.0f°C", c)) }
-        if let g = t.gpu { parts.append(String(format: "GPU %.0f°C", g)) }
-        if parts.isEmpty, let o = t.overall { parts.append(String(format: "avg %.0f°C", o)) }
-        print("\nTemp: " + parts.joined(separator: "   ") + "   (\(t.all.count) sensors)")
+        if let cpu = temperatures.cpu {
+            parts.append(String(format: "CPU %.0f°C", cpu))
+        }
+        if let gpu = temperatures.gpu {
+            parts.append(String(format: "GPU %.0f°C", gpu))
+        }
+        if parts.isEmpty, let overall = temperatures.overall {
+            parts.append(String(format: "avg %.0f°C", overall))
+        }
+        print("\nTemp: " + parts.joined(separator: "   ")
+              + "   (\(temperatures.all.count) sensors)")
     }
-
     printDaemonState()
+    return true
 }
 
-/// What the daemon is driving, if it's running.
 func printDaemonState() {
     let reply: String
     switch sendToDaemon("state") {
-    case .ok(let r): reply = r
+    case .ok(let response):
+        reply = response
     case .unavailable:
         print("\nDaemon: not running — fan control unavailable without sudo")
         return
-    case .failed(let m):
-        print("\nDaemon: unreachable (\(m))")
+    case .failed(let message):
+        print("\nDaemon: unreachable (\(message))")
         return
     }
-    guard let s = DaemonState.decode(reply) else {
-        print("\nDaemon: running an older version — upgrade for curves (brew upgrade fanknob)")
+    guard let state = DaemonState.decode(reply) else {
+        print("\nDaemon: incompatible response — upgrade fanknob")
         return
     }
+
     var line: String
-    switch s.mode {
+    switch state.mode {
     case "curve":
-        let name = s.preset ?? "custom"
-        line = "curve (\(name))"
-        if let c = s.curve { line += "  \(c)" }
-        if let k = s.knob { line += String(format: "  → %.0f%%", k) }
+        line = "curve (\(state.preset ?? "custom"))"
+        if let curve = state.curve { line += "  \(curve)" }
+        if let knob = state.knob { line += String(format: "  → %.0f%%", knob) }
     case "manual":
-        line = "manual" + (s.knob.map { String(format: " %.0f%%", $0) } ?? "")
-        if s.holdRemaining > 0 { line += "  (reverts in \(s.holdRemaining)s)" }
+        line = "manual" + (state.knob.map { String(format: " %.0f%%", $0) } ?? "")
+        if state.holdRemaining > 0 {
+            line += "  (reverts in \(state.holdRemaining)s)"
+        }
     default:
         line = "auto"
     }
-    let wd = s.watchdogCelsius.map { "\(Int($0))°C" } ?? "off"
-    print("\nDaemon: \(line)   watchdog \(wd)")
-    if s.watchdogTripped {
-        print("        ⚠︎ watchdog tripped — fans were returned to the firmware")
+    let watchdog = state.watchdogCelsius.map { "\(Int($0))°C" } ?? "off"
+    print("\nDaemon: \(line)   watchdog \(watchdog)")
+    if let reason = state.safetyReason {
+        print("        ⚠︎ \(reason)")
     }
 }
 
-func cmdTemp(_ smc: SMC) {
-    let t = readTempReport(smc)
-    guard !t.all.isEmpty else { print("No temperature sensors readable."); return }
-    var head: [String] = []
-    if let c = t.cpu { head.append(String(format: "CPU %.1f°C", c)) }
-    if let g = t.gpu { head.append(String(format: "GPU %.1f°C", g)) }
-    if let o = t.overall { head.append(String(format: "all %.1f°C", o)) }
-    print("Temperature — \(head.joined(separator: "   "))   (\(t.all.count) sensors)\n")
-    for s in t.all {
-        print(String(format: "  %-5@  %5.1f°C", s.key as CVarArg, s.celsius))
+@discardableResult
+func cmdTemp(_ smc: SMC) -> Bool {
+    let report = readTempReport(smc)
+    guard !report.all.isEmpty else {
+        stderr("No temperature sensors readable.")
+        return false
     }
+    var header: [String] = []
+    if let cpu = report.cpu { header.append(String(format: "CPU %.1f°C", cpu)) }
+    if let gpu = report.gpu { header.append(String(format: "GPU %.1f°C", gpu)) }
+    if let overall = report.overall {
+        header.append(String(format: "all %.1f°C", overall))
+    }
+    print("Temperature — \(header.joined(separator: "   "))"
+          + "   (\(report.all.count) sensors)\n")
+    for sensor in report.all {
+        print(String(format: "  %-5@  %5.1f°C",
+                     sensor.key as CVarArg, sensor.celsius))
+    }
+    return true
 }
 
-func cmdKeys(_ smc: SMC, prefix: String) {
+@discardableResult
+func cmdKeys(_ smc: SMC, prefix: String) -> Bool {
     let count = smc.keyCount()
-    guard count > 0 else { print("Could not enumerate keys."); return }
-    print("Scanning \(count) SMC keys with prefix '\(prefix)'...\n")
-    for i in 0..<count {
-        guard let key = smc.keyAtIndex(i) else { continue }
-        let name = fourCCString(key)
-        guard name.hasPrefix(prefix) else { continue }
-        guard let (t, b) = smc.read(key) else { continue }
-        let val = decodeToDouble(type: t, bytes: b)
-            .map { String(format: "%.2f", $0) } ?? b.map { String(format: "%02x", $0) }.joined()
-        print("  \(name)  [\(fourCCString(t))]  \(val)")
+    guard count > 0 else {
+        stderr("Could not enumerate keys.")
+        return false
     }
+    print("Scanning \(count) SMC keys with prefix '\(prefix)'...\n")
+    for index in 0..<count {
+        guard let key = smc.keyAtIndex(index) else { continue }
+        let name = fourCCString(key)
+        guard name.hasPrefix(prefix), let (type, bytes) = smc.read(key) else { continue }
+        let value = decodeToDouble(type: type, bytes: bytes)
+            .map { String(format: "%.2f", $0) }
+            ?? bytes.map { String(format: "%02x", $0) }.joined()
+        print("  \(name)  [\(fourCCString(type))]  \(value)")
+    }
+    return true
 }
 
-// Hidden dev command: time the SMC read paths the app's poller uses.
+// Hidden developer command: time the SMC read paths used by the app.
 func cmdBench(_ smc: SMC) {
-    func ms(_ t: TimeInterval) -> String { String(format: "%7.2f ms", t * 1000) }
-
-    var t0 = Date()
+    func milliseconds(_ value: TimeInterval) -> String {
+        String(format: "%7.2f ms", value * 1000)
+    }
+    var start = Date()
     let keys = discoverTempKeys(smc)
-    print("discoverTempKeys (\(keys.count) keys): \(ms(Date().timeIntervalSince(t0)))")
-
-    let iters = 20
-    t0 = Date()
-    for _ in 0..<iters { _ = readTempsCached(smc, keys) }
-    let tempAvg = Date().timeIntervalSince(t0) / Double(iters)
-    print("readTempsCached  avg over \(iters):   \(ms(tempAvg))")
-
-    t0 = Date()
-    for _ in 0..<iters { _ = (0..<fanCount(smc)).compactMap { readFan(smc, $0) } }
-    let fanAvg = Date().timeIntervalSince(t0) / Double(iters)
-    print("fan scan         avg over \(iters):   \(ms(fanAvg))")
-    print("≈ one app poll (temps + fans):  \(ms(tempAvg + fanAvg))")
+    print("discoverTempKeys (\(keys.count) keys): \(milliseconds(Date().timeIntervalSince(start)))")
+    let iterations = 20
+    start = Date()
+    for _ in 0..<iterations { _ = readTempsCached(smc, keys) }
+    let temperatureAverage = Date().timeIntervalSince(start) / Double(iterations)
+    start = Date()
+    for _ in 0..<iterations {
+        _ = (0..<fanCount(smc)).compactMap { readFan(smc, $0) }
+    }
+    let fanAverage = Date().timeIntervalSince(start) / Double(iterations)
+    print("readTempsCached  avg over \(iterations):   \(milliseconds(temperatureAverage))")
+    print("fan scan         avg over \(iterations):   \(milliseconds(fanAverage))")
+    print("≈ one app poll (temps + fans):  \(milliseconds(temperatureAverage + fanAverage))")
 }
 
 // MARK: - Writes
 
-/// Send a control command to the daemon. `fallback` runs instead when there's
-/// no daemon but we are root; pass nil for commands that require the daemon.
-func control(_ command: String, _ smc: SMC, fallback: ((SMC) -> Void)?) {
+/// Prefer the daemon even as root. A direct write while the daemon is following
+/// a curve would be overwritten on its next tick.
+@discardableResult
+func control(_ command: String, _ smc: SMC,
+             fallback: ((SMC) -> Bool)?) -> Bool {
     switch sendToDaemon(command) {
     case .ok(let reply):
         print(reply.isEmpty ? "OK" : reply)
-    case .failed(let m):
-        print("Could not reach daemon: \(m)")
+        return true
+    case .failed(let message):
+        stderr("fanknob: \(message)")
+        return false
     case .unavailable:
-        if geteuid() == 0, let fallback {
-            fallback(smc)
-            return
-        }
+        if geteuid() == 0, let fallback { return fallback(smc) }
         if fallback == nil && geteuid() == 0 {
-            print("That needs the fanknob daemon running (it evaluates curves over time).")
+            stderr("That command needs the fanknob daemon running.")
         } else {
-            print("""
+            stderr("""
             fanknob daemon not running, and this isn't root.
-            The installer loads it for you; if it was stopped, start it with:
-              sudo launchctl bootstrap system /Library/LaunchDaemons/com.fanknob.daemon.plist
-            Not installed yet?  brew install --cask SadriG91/tap/fanknob
-            Or run this command with sudo.
+            Start or reinstall it, or run this command with sudo.
             """)
         }
+        return false
     }
 }
 
-func usage() {
+private func usage() {
     print("""
     fanknob — knob-style fan control for Apple Silicon
 
-      fanknob status                    fans, temperature, and what the daemon is doing
+      fanknob status [--json]           fans, temperatures, and daemon state
+      fanknob diagnose --json           privacy-safe compatibility report
       fanknob tui                       live interactive dashboard
       fanknob temp                      list all temperature sensors
       fanknob keys [prefix]             dump SMC keys (default prefix 'F')
-      fanknob version                   the installed version
+      fanknob version                   installed version
 
       fanknob set <0-100> [options]     fixed speed
             --fan <n>                   just that fan (default: all)
-            --for <seconds>             revert to auto afterwards
+            --for <seconds>             revert to auto (maximum 86400)
       fanknob auto                      return to firmware control
-
-      fanknob preset <name>             temperature curve: quiet | balanced | turbo
-      fanknob curve <°C>:<%>,...        custom curve, e.g. 55:0,72:20,85:60,93:100
-      fanknob watchdog <°C>|off         hand back to firmware above this temp
-
-    Reads need no privileges. Control goes through the root daemon, so no sudo
-    per command once it's installed.
+      fanknob preset quiet|balanced|turbo
+      fanknob curve <°C>:<%>,...        strictly rising temperatures/speeds
+      fanknob watchdog <°C>|off
     """)
+}
+
+/// Validate the complete invocation before opening the SMC. Besides producing
+/// normal usage errors on machines where hardware access is unavailable, this
+/// guarantees NaN/∞ and malformed options never reach integer conversion or a
+/// control path.
+private func invocationError(_ arguments: [String]) -> String? {
+    guard let command = arguments.first else { return nil }
+    switch command {
+    case "status":
+        return arguments.count == 1
+            || (arguments.count == 2 && arguments[1] == "--json")
+            ? nil : "usage: fanknob status [--json]"
+    case "diagnose":
+        return arguments == ["diagnose", "--json"]
+            ? nil : "usage: fanknob diagnose --json"
+    case "temp", "tui", "top", "bench", "auto":
+        return arguments.count == 1 ? nil : "unexpected option for \(command)"
+    case "keys":
+        return arguments.count <= 2 ? nil : "usage: fanknob keys [prefix]"
+    case "set":
+        guard arguments.count >= 2,
+              let value = Double(arguments[1]), value.isFinite else {
+            return "usage: fanknob set <0-100> [--fan <n>] [--for <seconds>]"
+        }
+        var index = 2
+        while index < arguments.count {
+            guard index + 1 < arguments.count else {
+                return "missing value for \(arguments[index])"
+            }
+            switch arguments[index] {
+            case "--for":
+                guard let seconds = Int(arguments[index + 1]),
+                      (0...maximumHoldSeconds).contains(seconds) else {
+                    return "--for must be between 0 and \(maximumHoldSeconds)"
+                }
+            case "--fan":
+                guard let fan = Int(arguments[index + 1]), fan >= 0 else {
+                    return "--fan must be a non-negative integer"
+                }
+            default:
+                return "unknown option: \(arguments[index])"
+            }
+            index += 2
+        }
+        return nil
+    case "preset":
+        guard arguments.count == 2,
+              CurvePreset(rawValue: arguments[1].lowercased()) != nil else {
+            return "usage: fanknob preset quiet|balanced|turbo"
+        }
+        return nil
+    case "curve":
+        guard arguments.count == 2, FanCurve.parse(arguments[1]) != nil else {
+            return "curve requires 2–12 safe points formatted as °C:%"
+        }
+        return nil
+    case "watchdog":
+        guard arguments.count == 2 else {
+            return "usage: fanknob watchdog <°C>|off"
+        }
+        let value = arguments[1].lowercased()
+        guard value == "off"
+                || (Double(value).map {
+                    $0.isFinite && $0 > 0 && $0 <= 120
+                } ?? false) else {
+            return "watchdog must be a temperature from 1–120, or off"
+        }
+        return nil
+    default:
+        return "unknown command: \(command)"
+    }
+}
+
+private func openSMC() -> SMC? {
+    let smc = SMC()
+    do {
+        try smc.open()
+        return smc
+    } catch {
+        stderr("\(error)")
+        return nil
+    }
 }
 
 @main
 struct Fanknob {
     static func main() {
-        let args = CommandLine.arguments
-        guard args.count >= 2 else { usage(); exit(0) }
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        guard let command = arguments.first else { usage(); exit(0) }
 
-        // Answered before the SMC is touched, so asking an install what it is
-        // still works on a machine where the SMC won't open.
-        if ["version", "--version", "-v"].contains(args[1]) {
+        if ["version", "--version", "-v"].contains(command) {
+            guard arguments.count == 1 else { usage(); exit(2) }
             print("fanknob \(fanknobVersion)")
-            exit(0)
+            return
         }
 
-        let smc = SMC()
-        do { try smc.open() }
-        catch { FileHandle.standardError.write("\(error)\n".data(using: .utf8)!); exit(1) }
-        defer { smc.close() }
+        if let error = invocationError(arguments) {
+            stderr(error)
+            exit(2)
+        }
 
-        switch args[1] {
-        case "status": cmdStatus(smc)
-        case "temp":   cmdTemp(smc)
-        case "tui", "top": runTUI(smc)
-        case "bench":  cmdBench(smc)   // hidden: SMC read-path timings
-        case "keys":   cmdKeys(smc, prefix: args.count >= 3 ? args[2] : "F")
+        guard let smc = openSMC() else { exit(1) }
+        defer { smc.close() }
+        var success = true
+
+        switch command {
+        case "status":
+            guard arguments.count == 1
+                    || (arguments.count == 2 && arguments[1] == "--json")
+            else { usage(); exit(2) }
+            success = cmdStatus(smc, json: arguments.count == 2)
+
+        case "diagnose":
+            guard arguments == ["diagnose", "--json"] else { usage(); exit(2) }
+            success = printJSON(collectDiagnostics(smc))
+
+        case "temp":
+            guard arguments.count == 1 else { usage(); exit(2) }
+            success = cmdTemp(smc)
+
+        case "tui", "top":
+            guard arguments.count == 1 else { usage(); exit(2) }
+            runTUI(smc)
+
+        case "bench":
+            guard arguments.count == 1 else { usage(); exit(2) }
+            cmdBench(smc)
+
+        case "keys":
+            guard arguments.count <= 2 else { usage(); exit(2) }
+            success = cmdKeys(smc, prefix: arguments.count == 2 ? arguments[1] : "F")
 
         case "set":
-            guard args.count >= 3, let v = Double(args[2]) else {
-                print("usage: fanknob set <0-100> [--fan <n>] [--for <seconds>]"); exit(1)
+            guard arguments.count >= 2,
+                  let value = Double(arguments[1]), value.isFinite else {
+                stderr("usage: fanknob set <0-100> [--fan <n>] [--for <seconds>]")
+                exit(2)
             }
-            let pct = v.clamped(0, 100)
-            var seconds = 0
+            let percent = value.clamped(0, 100)
+            var hold = 0
             var fan: Int?
-            var i = 3
-            while i < args.count {
-                switch args[i] {
+            var index = 2
+            while index < arguments.count {
+                guard index + 1 < arguments.count else { usage(); exit(2) }
+                switch arguments[index] {
                 case "--for":
-                    if i + 1 < args.count, let s = Int(args[i + 1]) { seconds = max(0, s); i += 1 }
+                    guard let seconds = Int(arguments[index + 1]),
+                          (0...maximumHoldSeconds).contains(seconds) else {
+                        stderr("--for must be between 0 and \(maximumHoldSeconds)")
+                        exit(2)
+                    }
+                    hold = seconds
                 case "--fan":
-                    if i + 1 < args.count, let f = Int(args[i + 1]) { fan = f; i += 1 }
+                    guard let parsed = Int(arguments[index + 1]), parsed >= 0 else {
+                        stderr("--fan must be a non-negative integer")
+                        exit(2)
+                    }
+                    fan = parsed
                 default:
-                    if let s = Int(args[i]) { seconds = max(0, s) }   // legacy: bare seconds
+                    stderr("unknown option: \(arguments[index])")
+                    exit(2)
                 }
-                i += 1
+                index += 2
             }
-            var cmd = fan.map { "setfan \($0) \(Int(pct))" } ?? "set \(Int(pct))"
-            if seconds > 0 { cmd += " \(seconds)" }
-            control(cmd, smc) { s in
-                let targets = fan.map { [$0] } ?? Array(0..<fanCount(s))
-                for i in targets {
-                    if let rpm = try? setFanKnob(s, i, pct: pct) {
-                        print(String(format: "  fan %d -> %.0f rpm (knob %d%%)", i, rpm, Int(pct)))
-                    } else { print("  fan \(i): write failed") }
+            var wire = fan.map { "setfan \($0) \(Int(percent))" }
+                ?? "set \(Int(percent))"
+            if hold > 0 { wire += " \(hold)" }
+            success = control(wire, smc) { hardware in
+                let targets = fan.map { [$0] } ?? Array(0..<fanCount(hardware))
+                var applied: [Int] = []
+                for target in targets {
+                    do {
+                        let rpm = try setFanKnob(hardware, target, pct: percent)
+                        applied.append(target)
+                        print(String(format: "fan %d -> %.0f rpm (knob %d%%)",
+                                     target, rpm, Int(percent)))
+                    } catch {
+                        for index in applied { try? setFanAuto(hardware, index) }
+                        stderr("fan \(target) write failed; restored automatic control")
+                        return false
+                    }
                 }
-                if seconds > 0 {
-                    print("holding for \(seconds)s, then reverting to auto... (keep this running)")
-                    sleep(UInt32(seconds))
-                    for i in targets { try? setFanAuto(s, i) }
+                if hold > 0 {
+                    print("holding for \(hold)s, then reverting to auto...")
+                    sleep(UInt32(hold))
+                    for target in targets { try? setFanAuto(hardware, target) }
                     print("reverted to auto")
                 }
+                return true
             }
 
         case "auto":
-            control("auto", smc) { s in
-                for i in 0..<fanCount(s) {
-                    if (try? setFanAuto(s, i)) != nil { print("  fan \(i): auto") }
-                    else { print("  fan \(i): write failed") }
+            guard arguments.count == 1 else { usage(); exit(2) }
+            success = control("auto", smc) { hardware in
+                var ok = true
+                for index in 0..<fanCount(hardware) {
+                    do {
+                        try setFanAuto(hardware, index)
+                        print("fan \(index): auto")
+                    } catch {
+                        stderr("fan \(index): write failed")
+                        ok = false
+                    }
                 }
+                return ok
             }
 
         case "preset":
-            guard args.count >= 3 else {
-                print("usage: fanknob preset <\(CurvePreset.allCases.map(\.rawValue).joined(separator: "|"))>")
-                exit(1)
+            guard arguments.count == 2,
+                  let preset = CurvePreset(rawValue: arguments[1].lowercased()) else {
+                stderr("usage: fanknob preset quiet|balanced|turbo")
+                exit(2)
             }
-            control("preset \(args[2])", smc, fallback: nil)
+            success = control("preset \(preset.rawValue)", smc, fallback: nil)
 
         case "curve":
-            guard args.count >= 3 else {
-                print("usage: fanknob curve <°C>:<%>,<°C>:<%>[,...]   e.g. 55:0,72:20,85:60,93:100")
-                exit(1)
+            guard arguments.count == 2, let curve = FanCurve.parse(arguments[1]) else {
+                stderr("curve requires 2–12 points with increasing temperatures and speeds")
+                exit(2)
             }
-            control("curve \(args[2])", smc, fallback: nil)
+            success = control("curve \(curve.wireFormat)", smc, fallback: nil)
 
         case "watchdog":
-            guard args.count >= 3 else { print("usage: fanknob watchdog <°C>|off"); exit(1) }
-            control("watchdog \(args[2])", smc, fallback: nil)
+            guard arguments.count == 2 else { usage(); exit(2) }
+            let value = arguments[1].lowercased()
+            if value != "off" {
+                guard let temperature = Double(value), temperature.isFinite,
+                      temperature > 0, temperature <= 120 else {
+                    stderr("watchdog must be a temperature from 1–120, or off")
+                    exit(2)
+                }
+            }
+            success = control("watchdog \(value)", smc, fallback: nil)
 
-        default: usage()
+        default:
+            usage()
+            exit(2)
         }
+        if !success { exit(1) }
     }
 }
