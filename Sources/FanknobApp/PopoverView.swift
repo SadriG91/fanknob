@@ -1119,16 +1119,22 @@ private struct CurveGraph: View {
     @Binding var selectedPoint: Int
     let currentTemperature: Double?
 
+    /// The plot is inset from the canvas edges so a point at an extreme
+    /// (100 % knob, 20/110 °C) renders fully inside the rounded rect instead
+    /// of having its circle clipped in half by the border.
+    private let plotInset: CGFloat = 8
+    private let pointDiameter: CGFloat = 11
+
     var body: some View {
         GeometryReader { geometry in
             let size = geometry.size
             ZStack {
                 Canvas { context, canvas in
                     for fraction in [0.25, 0.5, 0.75] {
+                        let y = plotInset + (canvas.height - 2 * plotInset) * fraction
                         var grid = Path()
-                        grid.move(to: CGPoint(x: 0, y: canvas.height * fraction))
-                        grid.addLine(to: CGPoint(x: canvas.width,
-                                                 y: canvas.height * fraction))
+                        grid.move(to: CGPoint(x: 0, y: y))
+                        grid.addLine(to: CGPoint(x: canvas.width, y: y))
                         context.stroke(grid, with: .color(.secondary.opacity(0.15)),
                                        lineWidth: 0.5)
                     }
@@ -1152,8 +1158,8 @@ private struct CurveGraph: View {
                 ForEach(points.indices, id: \.self) { index in
                     Circle()
                         .fill(index == selectedPoint ? activeAccent : Color(nsColor: .windowBackgroundColor))
-                        .stroke(activeAccent, lineWidth: 2)
-                        .frame(width: 13, height: 13)
+                        .stroke(activeAccent, lineWidth: 1.5)
+                        .frame(width: pointDiameter, height: pointDiameter)
                         .position(position(points[index], size: size))
                         .gesture(DragGesture(coordinateSpace: .named("curve-graph"))
                             .onChanged { dragPoint(index, location: $0.location,
@@ -1184,22 +1190,27 @@ private struct CurveGraph: View {
 
     private func position(_ point: FanCurve.Point, size: CGSize) -> CGPoint {
         CGPoint(x: xPosition(point.celsius, width: size.width),
-                y: size.height * (1 - CGFloat(point.knob / 100)))
+                y: plotInset + (size.height - 2 * plotInset)
+                    * (1 - CGFloat(point.knob / 100)))
     }
 
     private func xPosition(_ temperature: Double, width: CGFloat) -> CGFloat {
-        CGFloat((temperature - FanCurve.temperatureRange.lowerBound)
+        plotInset + CGFloat((temperature - FanCurve.temperatureRange.lowerBound)
                 / (FanCurve.temperatureRange.upperBound
-                   - FanCurve.temperatureRange.lowerBound)) * width
+                   - FanCurve.temperatureRange.lowerBound)) * (width - 2 * plotInset)
     }
 
     private func dragPoint(_ index: Int, location: CGPoint, size: CGSize) {
-        guard size.width > 0, size.height > 0 else { return }
+        guard size.width > 2 * plotInset, size.height > 2 * plotInset else { return }
+        let fractionX = Double(((location.x - plotInset)
+                / (size.width - 2 * plotInset)).clamped(0, 1))
+        let fractionY = Double(((location.y - plotInset)
+                / (size.height - 2 * plotInset)).clamped(0, 1))
         let rawTemperature = FanCurve.temperatureRange.lowerBound
-            + Double((location.x / size.width).clamped(0, 1))
+            + fractionX
             * (FanCurve.temperatureRange.upperBound
                - FanCurve.temperatureRange.lowerBound)
-        let rawKnob = Double((1 - location.y / size.height).clamped(0, 1)) * 100
+        let rawKnob = (1 - fractionY) * 100
         let minimumTemperature = index == 0
             ? FanCurve.temperatureRange.lowerBound : points[index - 1].celsius + 1
         let maximumTemperature = index == points.count - 1
