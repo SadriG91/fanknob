@@ -92,7 +92,14 @@ private struct ParallaxUnder: ViewModifier {
     func body(content: Content) -> some View {
         content
             .offset(x: active ? -90 : 0)
-            .opacity(active ? 0.5 : 1)
+            // The end state must be FULLY invisible (opacity 0), not dimmed:
+            // the pane springs have a settling tail that can outlive the
+            // card's occluding backing, and a removal view parked at half
+            // opacity flashed through the editor when the backing faded out.
+            // The blur doubles as the depth cue — the page defocuses as it
+            // recedes and sharpens as it comes back.
+            .opacity(active ? 0 : 1)
+            .blur(radius: active ? 4 : 0)
     }
 }
 
