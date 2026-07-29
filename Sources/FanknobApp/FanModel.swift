@@ -48,6 +48,7 @@ enum UIMode: String, CaseIterable {
 private let askedAboutLoginKey = "askedAboutLaunchAtLogin"
 private let notificationsKey = "safetyNotificationsEnabled"
 private let curveProfilesKey = "savedCurveProfiles"
+private let showHistoryKey = "showHistorySection"
 
 struct HistorySample: Identifiable, Equatable {
     let id = UUID()
@@ -167,6 +168,12 @@ final class FanModel: @unchecked Sendable {
 
     /// True while the user is dragging a slider.
     var editing = false
+    /// The 30-minute history panel is opt-in (gear menu). Sampling continues
+    /// while hidden so enabling it shows data immediately; with nothing
+    /// reading `history`, @Observable triggers no re-renders for the appends.
+    var showHistory = UserDefaults.standard.bool(forKey: showHistoryKey) {
+        didSet { UserDefaults.standard.set(showHistory, forKey: showHistoryKey) }
+    }
     var history: [HistorySample] = []
     var showCurveEditor = false
     var curveProfiles: [CurveProfile] = loadCurveProfiles()

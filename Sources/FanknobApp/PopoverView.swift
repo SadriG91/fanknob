@@ -649,7 +649,9 @@ private struct HistorySection: View {
         // The count read lives HERE, not in PopoverView.body: @Observable
         // tracks per View.body, and history changes every 5 s. The `if`'s
         // children flatten into the parent VStack, so layout is unchanged.
-        if model.history.count >= 2 {
+        // showHistory first: when hidden, the short-circuit means history is
+        // never read, so the 5 s appends re-render nothing at all.
+        if model.showHistory, model.history.count >= 2 {
             Divider()
             content
         }
@@ -1155,6 +1157,7 @@ private struct StatusSection: View {
                 Toggle("Safety notifications",
                        isOn: Binding(get: { model.notificationsEnabled },
                                      set: { model.setNotificationsEnabled($0) }))
+                Toggle("Show 30-minute history", isOn: $model.showHistory)
                 if model.daemonPresent {
                     Picker("Thermal watchdog", selection: watchdogBinding) {
                         Text("Off").tag(Double?.none)
