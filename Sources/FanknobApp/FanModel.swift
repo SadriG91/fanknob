@@ -178,6 +178,15 @@ final class FanModel: @unchecked Sendable {
     }
     var history: [HistorySample] = []
     var showCurveEditor = false
+    /// Manual update check (gear menu). Deliberately never automatic: the
+    /// only network request this app makes is the one the user asks for.
+    enum UpdateCheck: Equatable {
+        case checking
+        case upToDate
+        case available(version: String, url: URL)
+        case failed(String)
+    }
+    var updateCheck: UpdateCheck?
     var curveProfiles: [CurveProfile] = loadCurveProfiles()
     var notificationsEnabled = UserDefaults.standard.bool(forKey: notificationsKey)
     private(set) var loginItemStatus = SMAppService.mainApp.status
@@ -565,6 +574,45 @@ final class FanModel: @unchecked Sendable {
         guard canWrite, daemonPresent else { return }
         watchdogCelsius = celsius
         performWrite { $0.setWatchdog(celsius) }
+    }
+
+    // MARK: Update check
+
+    private static let latestReleaseURL =
+        URL(string: "https://api.github.com/repos/SadriG91/fanknob/releases/latest")!
+
+    func checkForUpdates() {
+        guard updateCheck != .checking else { return }
+        updateCheck = .checking
+        struct Release: Decodable {
+            let tagName: String
+            let htmlURL: String
+            enum CodingKeys: String, CodingKey {
+                case tagName = "tag_name", htmlURL = "html_url"
+            }
+        }
+        var request = URLRequest(url: Self.latestReleaseURL)
+        request.timeoutInterval = 10
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        URLSession.shared.dataTask(with: request) { data, _, error in
+            let result: UpdateCheck
+            if let data, let release = try? JSONDecoder().decode(Release.self, from: data),
+               let url = URL(string: release.htmlURL) {
+                if isVersion(release.tagName, newerThan: fanknobVersion) {
+                    var version = release.tagName
+                    if version.hasPrefix("v") { version.removeFirst() }
+                    result = .available(version: version, url: url)
+                } else {
+                    result = .upToDate
+                }
+            } else {
+                result = .failed(error?.localizedDescription
+                                 ?? "unexpected response from GitHub")
+            }
+            DispatchQueue.main.async { [weak self] in
+                self?.updateCheck = result
+            }
+        }.resume()
     }
 
     // MARK: History and notifications

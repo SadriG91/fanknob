@@ -103,6 +103,9 @@ struct PopoverView: View {
                             model.watchdogNoticeDismissed = true
                         }
                     }
+                    if let check = model.updateCheck {
+                        UpdateBanner(state: check) { model.updateCheck = nil }
+                    }
                     Divider()
                     TempsSection(model: model)
                     Divider()
@@ -125,6 +128,54 @@ struct PopoverView: View {
         .padding(16)
         .frame(width: model.showCurveEditor ? 420 : 320)
         .onAppear { model.popoverOpened() }   // fresh data the moment it opens
+    }
+}
+
+/// Result card for the gear menu's manual update check. Same geometry as
+/// ErrorBanner, on the neutral panel tint the other cards use — it's
+/// information, not a warning (except the failure case, which goes orange).
+private struct UpdateBanner: View {
+    let state: FanModel.UpdateCheck
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 7) {
+            switch state {
+            case .checking:
+                ProgressView().controlSize(.small).frame(width: 16)
+                Text("Checking for updates…").font(.caption)
+            case .upToDate:
+                Image(systemName: "checkmark.circle")
+                    .foregroundStyle(.secondary)
+                Text("You're up to date (\(fanknobVersion)).")
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+            case .available(let version, let url):
+                Image(systemName: "arrow.down.circle.fill")
+                    .foregroundStyle(activeAccent)
+                Text("Version \(version) is available (installed: \(fanknobVersion)).")
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 4)
+                Link("Get it", destination: url)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(activeAccent)
+            case .failed(let message):
+                Image(systemName: "wifi.exclamationmark")
+                    .foregroundStyle(.orange)
+                Text("Update check failed: \(message)")
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if case .available = state {} else { Spacer(minLength: 4) }
+            if state != .checking {
+                Button(action: dismiss) { Image(systemName: "xmark") }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Dismiss update status")
+            }
+        }
+        .padding(8)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 7))
     }
 }
 
@@ -1188,6 +1239,7 @@ private struct StatusSection: View {
                     }
                 }
                 Divider()
+                Button("Check for updates…") { model.checkForUpdates() }
                 Button("Export diagnostics…") { model.exportDiagnostics() }
                 Button("Quit fanknob") { NSApp.terminate(nil) }
             } label: {

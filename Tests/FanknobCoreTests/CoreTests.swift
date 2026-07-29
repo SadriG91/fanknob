@@ -214,6 +214,31 @@ import Foundation
     }
 }
 
+// MARK: - Version comparison
+
+@Suite struct VersionComparisonTests {
+    @Test func numericComponentComparison() {
+        #expect(isVersion("1.4.4", newerThan: "1.4.3"))
+        #expect(isVersion("1.5.0", newerThan: "1.4.9"))
+        #expect(isVersion("2.0.0", newerThan: "1.9.9"))
+        #expect(!isVersion("1.4.3", newerThan: "1.4.3"))
+        #expect(!isVersion("1.4.2", newerThan: "1.4.3"))
+    }
+
+    @Test func numericNotLexicographic() {
+        // "13" > "1.4.0" numerically; lexical comparison gets this wrong.
+        #expect(isVersion("13", newerThan: "1.4.0"))
+        #expect(isVersion("1.10.0", newerThan: "1.9.0"))
+    }
+
+    @Test func tagPrefixAndMissingComponents() {
+        #expect(isVersion("v1.4.4", newerThan: "1.4.3"))
+        #expect(isVersion("1.4.3.1", newerThan: "1.4.3"))
+        #expect(!isVersion("v1.4", newerThan: "1.4.0"))
+        #expect(!isVersion("garbage", newerThan: "1.4.3"))
+    }
+}
+
 // MARK: - Config persistence
 
 @Suite struct ConfigTests {
