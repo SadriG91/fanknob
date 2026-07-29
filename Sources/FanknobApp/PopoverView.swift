@@ -85,13 +85,23 @@ struct ModeBadge: View {
 struct PopoverView: View {
     var model: FanModel
     @State private var showingHelp = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Secondary panes (editor, help) push in from the right; the main view
+    /// returns from the left — a navigation feel instead of a hard cut.
+    private static let pushIn: AnyTransition =
+        .move(edge: .trailing).combined(with: .opacity)
+    private static let pushOut: AnyTransition =
+        .move(edge: .leading).combined(with: .opacity)
 
     var body: some View {
         Group {
             if model.showCurveEditor {
                 CurveEditorView(model: model) { model.showCurveEditor = false }
+                    .transition(Self.pushIn)
             } else if showingHelp {
                 HelpView { showingHelp = false }
+                    .transition(Self.pushIn)
             } else {
                 VStack(alignment: .leading, spacing: 14) {
                     HeaderSection(model: model) { showingHelp = true }
@@ -125,10 +135,17 @@ struct PopoverView: View {
                     }
                     StatusSection(model: model)
                 }
+                .transition(Self.pushOut)
             }
         }
         .padding(16)
         .frame(width: model.showCurveEditor ? 420 : 320)
+        // One animation drives the pane slide AND the 320↔420 width change,
+        // so the window grows while the editor slides in instead of snapping.
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22),
+                   value: model.showCurveEditor)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22),
+                   value: showingHelp)
         .onAppear { model.popoverOpened() }   // fresh data the moment it opens
     }
 }
@@ -839,6 +856,7 @@ private struct CurveEditorView: View {
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut(.cancelAction)
+                .accessibilityLabel("Back")
                 Spacer()
                 Text("Custom curve").font(.headline)
                 Spacer()
