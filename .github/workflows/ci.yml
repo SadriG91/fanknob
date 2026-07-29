@@ -84,3 +84,9 @@ jobs:
             && xar -xf "$GITHUB_WORKSPACE/$PKG" component.pkg/PackageInfo )
           grep -q 'relocatable="false"' "$RUNNER_TEMP/pkginfo/component.pkg/PackageInfo" || {
             echo "::error::app bundle is relocatable — it may not install to /Applications"; exit 1; }
+
+          # The preinstall is what stops the package landing on top of a copy
+          # built from source; the Makefile guards the other direction. Losing
+          # it would be silent, so check it made it into the package.
+          grep -q 'preinstall' "$RUNNER_TEMP/pkginfo/component.pkg/PackageInfo" || {
+            echo "::error::preinstall guard missing from the package"; exit 1; }

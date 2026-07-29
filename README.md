@@ -35,17 +35,15 @@ Tested on a MacBook Pro 14" (M2 Pro, macOS 26).
 
 ## Install
 
-Apple Silicon and macOS 15 or newer. Two ways in, both a single step — fan
-control works the moment either one finishes.
-
-**Homebrew:**
+Apple Silicon and macOS 15 or newer. One command, and fan control works the
+moment it finishes:
 
 ```sh
 brew install --cask SadriG91/tap/fanknob
 ```
 
-**Or download** the signed `Fanknob-<version>.pkg` from
-[Releases](https://github.com/SadriG91/fanknob/releases/latest) and double-click it.
+No Homebrew? [Get it here](https://brew.sh) first. It's deliberately the only
+way in: one thing owns the install, and one command removes it cleanly.
 
 It installs:
 
@@ -65,7 +63,7 @@ binaries that can't run.
 brew upgrade --cask fanknob
 ```
 
-Or install a newer `.pkg` over the top; it replaces the running helper cleanly.
+It replaces the running helper cleanly, and your settings survive.
 
 ### Uninstalling
 
@@ -217,10 +215,6 @@ fanknob auto
 
 **Curves and presets do nothing.** Those need the helper running — it's what
 re-evaluates the curve over time. See above.
-
-**Don't mix install methods.** Use the package (or the Homebrew cask) *or* a
-build from source, not both — two helpers would fight over the same fans, so the
-second one refuses to start. `brew uninstall --cask fanknob` removes the first.
 
 **Still stuck?** The helper logs to `/var/log/fanknobd.log`, and `fanknob status`
 prints what it thinks is going on.

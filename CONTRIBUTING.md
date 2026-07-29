@@ -37,10 +37,14 @@ make app             # build everything + assemble build/Fanknob.app
 sudo make install    # install CLI + daemon + app, and load the daemon
 ```
 
-> Use ONE install method — the package (or the Homebrew cask) or `make install`,
-> not both. Each refuses to run when the other is in place: two daemons would
-> fight over the same socket, and the stale package receipt would claim files the
-> other target owns.
+> Use ONE install method — the Homebrew cask or `make install`, not both. They
+> write the same paths, so the second would leave a receipt claiming files it
+> didn't put there and neither uninstaller would own the whole thing.
+>
+> They refuse each other symmetrically: `make install` checks for the package
+> receipt, and `packaging/scripts/preinstall` checks for a source install (files
+> present, no receipt). Users only ever see the cask — the raw `.pkg` is a
+> release asset for the cask to download, not a documented install route.
 
 All targets:
 
