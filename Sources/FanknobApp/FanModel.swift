@@ -43,6 +43,8 @@ enum UIMode: String, CaseIterable {
     case auto, manual, curve
 }
 
+private let askedAboutLoginKey = "askedAboutLaunchAtLogin"
+
 /// What a per-fan badge should say.
 enum FanBadge: String {
     case auto = "AUTO", manual = "MANUAL", curve = "CURVE"
@@ -123,8 +125,27 @@ final class FanModel {
             } catch {
                 UILog.log("launch-at-login \(newValue) failed: \(error)")
             }
+            askedAboutLogin = true
         }
     }
+
+    /// Whether we've offered to keep fanknob in the menu bar.
+    ///
+    /// A menu-bar app that disappears at the next reboot looks broken, but
+    /// registering a login item behind someone's back is worse — macOS lists it
+    /// in Settings as something the app did on its own. So the popover asks,
+    /// once, and remembers the answer either way.
+    ///
+    /// Stored rather than computed: @Observable only tracks stored properties,
+    /// and a computed UserDefaults wrapper wouldn't re-render the popover when
+    /// the offer is answered.
+    var askedAboutLogin = UserDefaults.standard.bool(forKey: askedAboutLoginKey) {
+        didSet { UserDefaults.standard.set(askedAboutLogin, forKey: askedAboutLoginKey) }
+    }
+
+    /// True only while the offer is worth showing: we haven't asked, and it
+    /// isn't already on (someone may have enabled it from a previous install).
+    var shouldOfferLogin: Bool { !askedAboutLogin && !launchAtLogin }
 
     #if DEBUG
     /// Builds a model that touches no hardware and starts no timer, so the

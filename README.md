@@ -54,6 +54,9 @@ It installs:
 | `/usr/local/bin/fanknobd` | the background helper that does the actual fan writes |
 | `/Library/LaunchDaemons/com.fanknob.daemon.plist` | starts the helper at boot |
 
+Fanknob opens as the install finishes, so the fan icon is in your menu bar
+straight away. It asks once whether to keep it there after a restart.
+
 The installer refuses an Intel Mac or macOS 14 up front, rather than laying down
 binaries that can't run.
 

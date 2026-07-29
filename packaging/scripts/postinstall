@@ -10,6 +10,29 @@ set -u
 PLIST=/Library/LaunchDaemons/com.fanknob.daemon.plist
 LABEL=com.fanknob.daemon
 SOCKET=/var/run/fanknobd.sock
+APP="${3:-/}"; APP="${APP%/}/Applications/Fanknob.app"
+
+# Put the menu-bar icon on screen. Installing a menu-bar app and getting no
+# menu bar item is a poor first minute, and the daemon being up doesn't help
+# anyone who never opens a terminal.
+#
+# Everything here is best-effort: we run as root, and a failure to reach the
+# logged-in session must never fail an install that has otherwise succeeded.
+launch_app() {
+    [ -d "$APP" ] || return 0
+
+    # Who is actually at the screen — not $USER, which is root here.
+    user=$(stat -f "%Su" /dev/console 2>/dev/null) || return 0
+    [ -n "$user" ] && [ "$user" != "root" ] || return 0
+    uid=$(id -u "$user" 2>/dev/null) || return 0
+
+    # On an upgrade the old build is still running and would keep serving the
+    # old code, so retire it first. SIGTERM, so it exits the way it expects to.
+    launchctl asuser "$uid" pkill -x FanknobApp 2>/dev/null || true
+    sleep 1
+
+    launchctl asuser "$uid" sudo -u "$user" open -a "$APP" 2>/dev/null || true
+}
 
 # bootout first so an upgrade replaces the running daemon instead of colliding
 # with it over the socket. The outgoing instance gets SIGTERM and hands the fans
@@ -33,6 +56,7 @@ fi
 i=0
 while [ "$i" -lt 20 ]; do
     if [ -S "$SOCKET" ]; then
+        launch_app
         exit 0
     fi
     i=$((i + 1))

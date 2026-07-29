@@ -396,6 +396,7 @@ private extension FanModel {
     static var automatic: FanModel {
         let model = FanModel(fixture: ())
         model.popoverShown = true   // the speed slider's easing is paused otherwise
+        model.askedAboutLogin = true   // keep the first-run offer out of the docs
         model.fans = [
             Fan(index: 0, actual: 3132, min: 2317, max: 6800, target: 3132, managed: false),
             Fan(index: 1, actual: 3383, min: 2317, max: 6800, target: 3383, managed: false),
@@ -411,6 +412,7 @@ private extension FanModel {
     static var followingCurve: FanModel {
         let model = FanModel(fixture: ())
         model.popoverShown = true   // the speed slider's easing is paused otherwise
+        model.askedAboutLogin = true   // keep the first-run offer out of the docs
         model.fans = [
             Fan(index: 0, actual: 4697, min: 2317, max: 6800, target: 4697, managed: true),
             Fan(index: 1, actual: 4686, min: 2317, max: 6800, target: 4686, managed: true),

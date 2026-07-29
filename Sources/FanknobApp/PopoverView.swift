@@ -99,6 +99,10 @@ struct PopoverView: View {
                     Divider()
                     ControlSection(model: model)
                     Divider()
+                    if model.shouldOfferLogin {
+                        LoginOffer(model: model)
+                        Divider()
+                    }
                     StatusSection(model: model)
                 }
             }
@@ -580,6 +584,41 @@ private struct HoldLabel: View {
                 .help("Reverts to automatic control when the countdown ends")
         } else {
             Text("Hold").font(.subheadline).foregroundStyle(.secondary)
+        }
+    }
+}
+
+// MARK: - Launch at login
+
+/// A one-time offer to keep fanknob in the menu bar.
+///
+/// Asked here rather than as an alert on first launch: this is a menu-bar
+/// agent with no windows, so a modal appearing out of nowhere would have no
+/// obvious source. Either button answers it for good — see
+/// `FanModel.askedAboutLogin`.
+private struct LoginOffer: View {
+    @Bindable var model: FanModel
+
+    var body: some View {
+        // Text on its own row: at 320 pt wide, sharing a line with two buttons
+        // wrapped the question onto four cramped lines.
+        VStack(alignment: .leading, spacing: 9) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Keep fanknob in your menu bar?")
+                    .font(.subheadline)
+                Text("Otherwise it's gone after a restart.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            HStack(spacing: 10) {
+                Spacer()
+                Button("Not now") { model.askedAboutLogin = true }
+                    .buttonStyle(.plain)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Keep it") { model.launchAtLogin = true }
+                    .controlSize(.small)
+                    .buttonStyle(.borderedProminent)
+            }
         }
     }
 }

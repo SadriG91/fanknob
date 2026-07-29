@@ -6,4 +6,4 @@
 // and nowhere else.
 
 /// Marketing version, matching the `vX.Y.Z` release tag.
-public let fanknobVersion = "1.4.2"
+public let fanknobVersion = "1.4.3"
