@@ -183,7 +183,12 @@ final class FanModel: @unchecked Sendable {
     enum UpdateCheck: Equatable {
         case checking
         case upToDate
-        case available(version: String, url: URL)
+        /// `pkg` is the release's installer asset — only offered when this
+        /// install has a package receipt; over a source install the pkg's
+        /// preinstall guard would (correctly) refuse, so those get the
+        /// release-page link instead.
+        case available(version: String, url: URL, pkg: URL?)
+        case downloading
         case failed(String)
     }
     var updateCheck: UpdateCheck?
@@ -581,14 +586,41 @@ final class FanModel: @unchecked Sendable {
     private static let latestReleaseURL =
         URL(string: "https://api.github.com/repos/SadriG91/fanknob/releases/latest")!
 
+    /// True when this install came from the .pkg (or the Homebrew cask, which
+    /// installs the same package) — the receipt the Makefile also checks.
+    /// Only those installs are offered in-app installation; the pkg's
+    /// preinstall refuses to lay files over a source install by design.
+    private nonisolated static func installedViaPackage() -> Bool {
+        let check = Process()
+        check.executableURL = URL(fileURLWithPath: "/usr/sbin/pkgutil")
+        check.arguments = ["--pkg-info", "com.fanknob.pkg"]
+        check.standardOutput = FileHandle.nullDevice
+        check.standardError = FileHandle.nullDevice
+        do {
+            try check.run()
+            check.waitUntilExit()
+            return check.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+
     func checkForUpdates() {
-        guard updateCheck != .checking else { return }
+        guard updateCheck != .checking, updateCheck != .downloading else { return }
         updateCheck = .checking
         struct Release: Decodable {
+            struct Asset: Decodable {
+                let name: String
+                let browserDownloadURL: String
+                enum CodingKeys: String, CodingKey {
+                    case name, browserDownloadURL = "browser_download_url"
+                }
+            }
             let tagName: String
             let htmlURL: String
+            let assets: [Asset]
             enum CodingKeys: String, CodingKey {
-                case tagName = "tag_name", htmlURL = "html_url"
+                case tagName = "tag_name", htmlURL = "html_url", assets
             }
         }
         var request = URLRequest(url: Self.latestReleaseURL)
@@ -601,7 +633,11 @@ final class FanModel: @unchecked Sendable {
                 if isVersion(release.tagName, newerThan: fanknobVersion) {
                     var version = release.tagName
                     if version.hasPrefix("v") { version.removeFirst() }
-                    result = .available(version: version, url: url)
+                    let pkg = Self.installedViaPackage()
+                        ? release.assets.first { $0.name.hasSuffix(".pkg") }
+                            .flatMap { URL(string: $0.browserDownloadURL) }
+                        : nil
+                    result = .available(version: version, url: url, pkg: pkg)
                 } else {
                     result = .upToDate
                 }
@@ -611,6 +647,36 @@ final class FanModel: @unchecked Sendable {
             }
             DispatchQueue.main.async { [weak self] in
                 self?.updateCheck = result
+            }
+        }.resume()
+    }
+
+    /// Download the release's .pkg and hand it to Installer. The package IS
+    /// the update mechanism: its postinstall replaces the daemon, waits for
+    /// the socket, and relaunches this app in the console session — the same
+    /// path every normal upgrade takes. Gatekeeper verifies the Developer ID
+    /// signature and notarization when Installer opens it.
+    func installUpdate(version: String, from pkg: URL) {
+        updateCheck = .downloading
+        URLSession.shared.downloadTask(with: pkg) { location, _, error in
+            var opened: URL?
+            if let location {
+                let dest = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("Fanknob-\(version).pkg")
+                try? FileManager.default.removeItem(at: dest)
+                if (try? FileManager.default.moveItem(at: location, to: dest)) != nil {
+                    opened = dest
+                }
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if let opened {
+                    NSWorkspace.shared.open(opened)
+                    self.updateCheck = nil
+                } else {
+                    self.updateCheck = .failed(error?.localizedDescription
+                                               ?? "the download could not be saved")
+                }
             }
         }.resume()
     }

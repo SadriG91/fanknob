@@ -104,7 +104,7 @@ struct PopoverView: View {
                         }
                     }
                     if let check = model.updateCheck {
-                        UpdateBanner(state: check) { model.updateCheck = nil }
+                        UpdateBanner(model: model, state: check) { model.updateCheck = nil }
                     }
                     Divider()
                     TempsSection(model: model)
@@ -135,6 +135,7 @@ struct PopoverView: View {
 /// ErrorBanner, on the neutral panel tint the other cards use — it's
 /// information, not a warning (except the failure case, which goes orange).
 private struct UpdateBanner: View {
+    var model: FanModel
     let state: FanModel.UpdateCheck
     let dismiss: () -> Void
 
@@ -144,22 +145,35 @@ private struct UpdateBanner: View {
             case .checking:
                 ProgressView().controlSize(.small).frame(width: 16)
                 Text("Checking for updates…").font(.caption)
+            case .downloading:
+                ProgressView().controlSize(.small).frame(width: 16)
+                Text("Downloading the update — Installer will open when it's ready…")
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
             case .upToDate:
                 Image(systemName: "checkmark.circle")
                     .foregroundStyle(.secondary)
                 Text("You're up to date (\(fanknobVersion)).")
                     .font(.caption)
                     .fixedSize(horizontal: false, vertical: true)
-            case .available(let version, let url):
+            case .available(let version, let url, let pkg):
                 Image(systemName: "arrow.down.circle.fill")
                     .foregroundStyle(activeAccent)
                 Text("Version \(version) is available (installed: \(fanknobVersion)).")
                     .font(.caption)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 4)
-                Link("Get it", destination: url)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(activeAccent)
+                if let pkg {
+                    Button("Install…") { model.installUpdate(version: version, from: pkg) }
+                        .controlSize(.small)
+                        .buttonStyle(.borderedProminent)
+                } else {
+                    // Source installs: the pkg's preinstall would refuse to
+                    // lay files over them, so point at the release instead.
+                    Link("View release", destination: url)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(activeAccent)
+                }
             case .failed(let message):
                 Image(systemName: "wifi.exclamationmark")
                     .foregroundStyle(.orange)
@@ -168,7 +182,7 @@ private struct UpdateBanner: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if case .available = state {} else { Spacer(minLength: 4) }
-            if state != .checking {
+            if state != .checking && state != .downloading {
                 Button(action: dismiss) { Image(systemName: "xmark") }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Dismiss update status")
