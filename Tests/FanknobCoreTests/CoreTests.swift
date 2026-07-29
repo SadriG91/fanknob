@@ -172,10 +172,9 @@ import Foundation
         #expect(c.knob(at: 70) == 50)
     }
 
-    @Test func clampsKnobValues() {
-        let c = FanCurve([.init(celsius: 50, knob: -20), .init(celsius: 90, knob: 500)])!
-        #expect(c.knob(at: 50) == 0)
-        #expect(c.knob(at: 90) == 100)
+    @Test func pointInitializerClampsKnobValues() {
+        #expect(FanCurve.Point(celsius: 50, knob: -20).knob == 0)
+        #expect(FanCurve.Point(celsius: 90, knob: 500).knob == 100)
     }
 
     @Test func needsAtLeastTwoPoints() {
@@ -196,6 +195,12 @@ import Foundation
         #expect(FanCurve.parse("55:0") == nil)          // single point
         #expect(FanCurve.parse("55,72:20") == nil)      // missing knob
         #expect(FanCurve.parse("nan:0,72:20") == nil)
+        #expect(FanCurve.parse("10:0,72:20") == nil)    // outside useful range
+        #expect(FanCurve.parse("55:0,55:20") == nil)    // duplicate temperature
+        #expect(FanCurve.parse("55:0,55.5:20") == nil)  // wire-safe 1 °C spacing
+        #expect(FanCurve.parse("55:50,72:20") == nil)   // speed falls as heat rises
+        #expect(FanCurve.parse("55:-1,72:20") == nil)
+        #expect(FanCurve.parse("55:0,72:101") == nil)
     }
 
     @Test func presetsRiseWithTemperature() {
@@ -294,9 +299,10 @@ import Foundation
         #expect(parseDaemonCommand("set -5") == .success(.set(pct: 0, holdSeconds: 0)))
     }
 
-    @Test func negativeOrJunkHoldBecomesZero() {
-        #expect(parseDaemonCommand("set 40 -10") == .success(.set(pct: 40, holdSeconds: 0)))
-        #expect(parseDaemonCommand("set 40 xyz") == .success(.set(pct: 40, holdSeconds: 0)))
+    @Test func rejectsInvalidOrExcessiveHold() {
+        #expect(parseDaemonCommand("set 40 -10") == .failure(.badSet))
+        #expect(parseDaemonCommand("set 40 xyz") == .failure(.badSet))
+        #expect(parseDaemonCommand("set 40 \(maximumHoldSeconds + 1)") == .failure(.badSet))
     }
 
     @Test func rejectsMalformedSet() {
@@ -310,6 +316,8 @@ import Foundation
     @Test func rejectsEmptyAndUnknown() {
         #expect(parseDaemonCommand("") == .failure(.empty))
         #expect(parseDaemonCommand("reboot") == .failure(.unknown("reboot")))
+        #expect(parseDaemonCommand("auto now") == .failure(.unknown("auto")))
+        #expect(parseDaemonCommand("state please") == .failure(.unknown("state")))
     }
 
     @Test func perFanCommands() {
@@ -344,5 +352,211 @@ import Foundation
 
     @Test func stateCommand() {
         #expect(parseDaemonCommand("state") == .success(.state))
+    }
+}
+
+// MARK: - Daemon safety engine
+
+private enum MockHardwareError: Error { case write }
+
+private final class MockFanHardware: FanHardware {
+    var fanIndices = [0, 1]
+    var samples: [[Double]] = [[60, 62]]
+    var temperatureReads = 0
+    var setCalls: [(Int, Double)] = []
+    var automaticCalls: [Int] = []
+    var failingFans: Set<Int> = []
+    var failingAutomaticFans: Set<Int> = []
+
+    func thermalSample() -> ThermalSample? {
+        temperatureReads += 1
+        let values = samples.count > 1 ? samples.removeFirst() : (samples.first ?? [])
+        return ThermalSample(temperatures: values)
+    }
+
+    func setFan(_ index: Int, percent: Double) throws -> Double {
+        setCalls.append((index, percent))
+        if failingFans.contains(index) { throw MockHardwareError.write }
+        return 2000 + percent * 40
+    }
+
+    func setAutomatic(_ index: Int) throws {
+        automaticCalls.append(index)
+        if failingAutomaticFans.contains(index) { throw MockHardwareError.write }
+    }
+}
+
+@Suite struct DaemonEngineTests {
+    private func path() -> String {
+        NSTemporaryDirectory() + "fanknob-engine-\(UUID().uuidString).json"
+    }
+
+    @Test func watchdogUsesHottestRawSensor() {
+        let hardware = MockFanHardware()
+        hardware.samples = [[70, 100]]
+        let configPath = path()
+        defer { unlink(configPath) }
+        let engine = DaemonEngine(hardware: hardware, configPath: configPath)
+
+        #expect(engine.handle("set 40").ok)
+        engine.tick()
+
+        let state = engine.currentState()
+        #expect(state.mode == "auto")
+        #expect(state.watchdogTripped)
+        #expect(state.hottestCelsius == 100)
+        #expect(hardware.automaticCalls == [0, 1])
+    }
+
+    @Test func thermalSampleSeparatesCurveAverageFromSafetyMaximum() {
+        let sample = ThermalSample(
+            averageTemperatures: [50, 60],
+            safetyTemperatures: [50, 60, 101]
+        )
+        #expect(sample?.average == 55)
+        #expect(sample?.hottest == 101)
+    }
+
+    @Test func missingSensorsFailSafeAfterThreeChecks() {
+        let hardware = MockFanHardware()
+        hardware.samples = [[]]
+        let configPath = path()
+        defer { unlink(configPath) }
+        let engine = DaemonEngine(hardware: hardware, configPath: configPath)
+
+        #expect(engine.handle("set 35").ok)
+        engine.tick()
+        engine.tick()
+        #expect(engine.currentState().mode == "manual")
+        engine.tick()
+        #expect(engine.currentState().mode == "auto")
+        #expect(engine.currentState().safetyReason?.contains("unavailable") == true)
+    }
+
+    @Test func curveTickSamplesOnlyOnce() {
+        let hardware = MockFanHardware()
+        let configPath = path()
+        defer { unlink(configPath) }
+        let engine = DaemonEngine(hardware: hardware, configPath: configPath)
+
+        #expect(engine.handle("preset balanced").ok)
+        let before = hardware.temperatureReads
+        engine.tick()
+        #expect(hardware.temperatureReads == before + 1)
+    }
+
+    @Test func holdSurvivesRestartAndExpiresSafely() {
+        let configPath = path()
+        defer { unlink(configPath) }
+        var clock = Date(timeIntervalSince1970: 10_000)
+
+        let firstHardware = MockFanHardware()
+        let first = DaemonEngine(hardware: firstHardware, configPath: configPath,
+                                 now: { clock })
+        #expect(first.handle("set 45 30").ok)
+        #expect(DaemonConfig.load(from: configPath)?.revertAt
+            == clock.addingTimeInterval(30))
+
+        let secondHardware = MockFanHardware()
+        let restarted = DaemonEngine(hardware: secondHardware, configPath: configPath,
+                                     now: { clock })
+        restarted.start()
+        #expect(restarted.currentState().mode == "manual")
+        #expect(secondHardware.setCalls.count == 2)
+
+        clock = clock.addingTimeInterval(31)
+        restarted.tick()
+        #expect(restarted.currentState().mode == "auto")
+        #expect(secondHardware.automaticCalls == [0, 1])
+    }
+
+    @Test func partialWriteFailureRollsEverythingBack() {
+        let hardware = MockFanHardware()
+        hardware.failingFans = [1]
+        let configPath = path()
+        defer { unlink(configPath) }
+        let engine = DaemonEngine(hardware: hardware, configPath: configPath)
+
+        let reply = engine.handle("set 50")
+        #expect(!reply.ok)
+        #expect(engine.currentState().mode == "auto")
+        #expect(hardware.automaticCalls == [0, 1])
+    }
+
+    @Test func persistenceFailureRollsManualWriteBack() {
+        let hardware = MockFanHardware()
+        let engine = DaemonEngine(
+            hardware: hardware,
+            configPath: "/dev/null/fanknob-config.json"
+        )
+
+        let reply = engine.handle("set 50 30")
+        #expect(!reply.ok)
+        #expect(engine.currentState().mode == "auto")
+        #expect(hardware.automaticCalls == [0, 1])
+    }
+
+    @Test func failedAutomaticWritesAreRetried() {
+        let hardware = MockFanHardware()
+        hardware.samples = [[]]
+        hardware.failingAutomaticFans = [1]
+        let configPath = path()
+        defer { unlink(configPath) }
+        let engine = DaemonEngine(hardware: hardware, configPath: configPath)
+
+        #expect(engine.handle("set 35").ok)
+        engine.tick()
+        engine.tick()
+        engine.tick()
+        #expect(engine.currentState().mode == "auto")
+        #expect(hardware.automaticCalls == [0, 1])
+
+        hardware.failingAutomaticFans = []
+        engine.tick()
+        #expect(hardware.automaticCalls == [0, 1, 0, 1])
+    }
+}
+
+// MARK: - Socket framing / protocol compatibility
+
+@Suite struct SocketProtocolTests {
+    @Test func lineRoundtripOverSocketPair() throws {
+        var descriptors: [Int32] = [0, 0]
+        #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors) == 0)
+        defer {
+            close(descriptors[0])
+            close(descriptors[1])
+        }
+        configureDaemonSocket(descriptors[0])
+        configureDaemonSocket(descriptors[1])
+        try writeDaemonLine(descriptors[0], "preset balanced")
+        #expect(try readDaemonLine(descriptors[1]) == "preset balanced")
+    }
+
+    @Test func oversizedLineIsRejected() throws {
+        var descriptors: [Int32] = [0, 0]
+        #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors) == 0)
+        defer {
+            close(descriptors[0])
+            close(descriptors[1])
+        }
+        try writeDaemonLine(descriptors[0], String(repeating: "x", count: 32))
+        #expect(throws: DaemonSocketError.tooLarge) {
+            _ = try readDaemonLine(descriptors[1], maximumBytes: 16)
+        }
+    }
+
+    @Test func structuredReplyRoundtrips() {
+        let reply = DaemonReply(ok: true, message: "state",
+                                state: DaemonState(mode: "curve", knob: 42))
+        #expect(DaemonReply.decode(reply.encoded()) == reply)
+    }
+
+    @Test func oldStatePayloadUsesDefaultsForNewFields() {
+        let old = #"{"mode":"auto","watchdogTripped":false,"holdRemaining":0}"#
+        let state = DaemonState.decode(old)
+        #expect(state?.mode == "auto")
+        #expect(state?.sensorFailures == 0)
+        #expect(state?.safetyReason == nil)
     }
 }

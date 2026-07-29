@@ -115,7 +115,9 @@ public enum SMCError: Error, CustomStringConvertible {
     }
 }
 
-public final class SMC {
+/// Callers confine each connection to one queue/thread. The type is marked
+/// unchecked because IOKit and the key-info cache are not internally locked.
+public final class SMC: @unchecked Sendable {
     private var conn: io_connect_t = 0
 
     public init() {}
@@ -245,7 +247,7 @@ public extension Double {
 
 // MARK: - Fans
 
-public struct Fan: Equatable {
+public struct Fan: Equatable, Sendable {
     public let index: Int
     public let actual: Double
     public let min: Double
@@ -289,10 +291,18 @@ public func readFan(_ smc: SMC, _ i: Int) -> Fan? {
 public func setFanKnob(_ smc: SMC, _ i: Int, pct: Double) throws -> Double {
     guard let f = readFan(smc, i) else { throw SMCError.call("fan \(i) unreadable") }
     let rpm = f.min + (f.max - f.min) * pct.clamped(0, 100) / 100
+    guard let info = try? smc.keyInfo(fourCC("F\(i)Tg")) else {
+        throw SMCError.call("fan \(i) target key unavailable")
+    }
     try smc.write(fourCC("F\(i)Md"), type: fourCC("ui8 "), bytes: [1])
-    if let info = try? smc.keyInfo(fourCC("F\(i)Tg")) {
+    do {
         try smc.write(fourCC("F\(i)Tg"), type: info.dataType,
                       bytes: encodeRPM(type: info.dataType, value: rpm))
+    } catch {
+        // Enabling manual mode succeeded but setting its target did not. Never
+        // leave the SMC pinned to whatever stale target happened to be there.
+        try? setFanAuto(smc, i)
+        throw error
     }
     return rpm
 }
@@ -304,7 +314,7 @@ public func setFanAuto(_ smc: SMC, _ i: Int) throws {
 
 // MARK: - Temperature
 
-public struct TempSensor {
+public struct TempSensor: Sendable {
     public let key: String
     public let celsius: Double
 
@@ -335,7 +345,7 @@ public func readTemps(_ smc: SMC) -> [TempSensor] {
 
 // Average across CPU-core (Tp*) and GPU (Tg*) clusters. Individual sensors spike
 // momentarily, so a cluster average is the meaningful number.
-public struct TempReport {
+public struct TempReport: Sendable {
     public let all: [TempSensor]
     public let cpu: Double?
     public let gpu: Double?

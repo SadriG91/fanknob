@@ -7,8 +7,11 @@
 
 import Foundation
 
-public struct FanCurve: Codable, Equatable {
-    public struct Point: Codable, Equatable, Comparable {
+public struct FanCurve: Codable, Equatable, Sendable {
+    public static let temperatureRange = 20.0...110.0
+    public static let maximumPointCount = 12
+
+    public struct Point: Codable, Equatable, Comparable, Sendable {
         public let celsius: Double
         public let knob: Double
 
@@ -24,8 +27,31 @@ public struct FanCurve: Codable, Equatable {
     public let points: [Point]
 
     public init?(_ points: [Point]) {
-        guard points.count >= 2, points.allSatisfy({ $0.celsius.isFinite }) else { return nil }
-        self.points = points.sorted()
+        guard (2...Self.maximumPointCount).contains(points.count),
+              points.allSatisfy({
+                  $0.celsius.isFinite && $0.knob.isFinite
+                      && Self.temperatureRange.contains($0.celsius)
+                      && (0...100).contains($0.knob)
+              }) else { return nil }
+        let sorted = points.sorted()
+        guard zip(sorted, sorted.dropFirst()).allSatisfy({
+            $1.celsius - $0.celsius >= 1 && $0.knob <= $1.knob
+        }) else { return nil }
+        self.points = sorted
+    }
+
+    private enum CodingKeys: CodingKey { case points }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let decoded = try container.decode([Point].self, forKey: .points)
+        guard let validated = FanCurve(decoded) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .points, in: container,
+                debugDescription: "curve temperatures must rise by at least 1°C and speeds must not decrease"
+            )
+        }
+        self = validated
     }
 
     /// Knob percentage for a temperature.
@@ -54,7 +80,9 @@ public struct FanCurve: Codable, Equatable {
             let parts = chunk.split(separator: ":")
             guard parts.count == 2,
                   let c = Double(parts[0]), let k = Double(parts[1]),
-                  c.isFinite, k.isFinite else { return nil }
+                  c.isFinite, k.isFinite, (0...100).contains(k) else {
+                return nil
+            }
             parsed.append(Point(celsius: c, knob: k))
         }
         return FanCurve(parsed)
@@ -63,7 +91,7 @@ public struct FanCurve: Codable, Equatable {
 
 /// Built-in curves. Tuned against Apple Silicon behavior: idle sits near
 /// 45-55 °C, sustained compiles push 80-90 °C.
-public enum CurvePreset: String, Codable, CaseIterable {
+public enum CurvePreset: String, Codable, CaseIterable, Sendable {
     case quiet, balanced, turbo
 
     public var label: String { rawValue.capitalized }
