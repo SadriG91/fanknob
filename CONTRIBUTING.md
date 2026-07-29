@@ -20,8 +20,8 @@ Sources/
   FanknobApp/    the SwiftUI menu-bar app
 Tests/           unit tests for the pure logic in FanknobCore
 app/Info.plist   app bundle metadata
-  packaging/       installer package definition + pre/postinstall scripts
-scripts/         icon generation and the UI acceptance harness
+packaging/       installer package definition + pre/postinstall scripts
+scripts/         icon generation, and the UI, docs and installer-guard checks
 com.fanknob.daemon.plist
 ```
 
