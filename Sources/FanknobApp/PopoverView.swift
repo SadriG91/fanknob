@@ -91,8 +91,8 @@ private struct ParallaxUnder: ViewModifier {
     let active: Bool
     func body(content: Content) -> some View {
         content
-            .offset(x: active ? -110 : 0)
-            .opacity(active ? 0.3 : 1)
+            .offset(x: active ? -90 : 0)
+            .opacity(active ? 0.5 : 1)
     }
 }
 
@@ -173,13 +173,21 @@ struct PopoverView: View {
                 .transition(Self.recede)
             }
         }
-        .frame(width: model.showCurveEditor ? 420 : 320)
+        // Trailing alignment, because the popover window's RIGHT edge is the
+        // stable one (width changes grow it leftward): pinned there, the main
+        // view holds still on screen while the 420→320 shrink plays out on
+        // the way back, instead of drifting with the centering math — that
+        // drift on top of the parallax is what made the pop feel mushy.
+        .frame(width: model.showCurveEditor ? 420 : 320, alignment: .trailing)
         .clipped()
-        // One spring drives the pane slide AND the 320↔420 width change,
-        // so the window grows while the editor slides in instead of snapping.
-        .animation(reduceMotion ? nil : .smooth(duration: 0.3),
+        // One spring drives the pane slide AND the width change. The pop is
+        // tuned quicker than the push (the animation is picked from the NEW
+        // value when the change lands), matching navigation-stack feel.
+        .animation(reduceMotion ? nil
+                   : .smooth(duration: model.showCurveEditor ? 0.32 : 0.24),
                    value: model.showCurveEditor)
-        .animation(reduceMotion ? nil : .smooth(duration: 0.3),
+        .animation(reduceMotion ? nil
+                   : .smooth(duration: showingHelp ? 0.32 : 0.24),
                    value: showingHelp)
         .onAppear {
             model.popoverOpened()   // fresh data the moment it opens
