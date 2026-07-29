@@ -104,7 +104,9 @@ struct PopoverView: View {
                         }
                     }
                     if let check = model.updateCheck {
-                        UpdateBanner(model: model, state: check) { model.updateCheck = nil }
+                        UpdateBanner(model: model, state: check) {
+                            model.dismissUpdateNotice()
+                        }
                     }
                     Divider()
                     TempsSection(model: model)

@@ -49,6 +49,9 @@ private let askedAboutLoginKey = "askedAboutLaunchAtLogin"
 private let notificationsKey = "safetyNotificationsEnabled"
 private let curveProfilesKey = "savedCurveProfiles"
 private let showHistoryKey = "showHistorySection"
+private let lastAutoUpdateCheckKey = "lastAutoUpdateCheck"
+private let updateSnoozeVersionKey = "updateSnoozeVersion"
+private let updateSnoozeUntilKey = "updateSnoozeUntil"
 
 struct HistorySample: Identifiable, Equatable {
     let id = UUID()
@@ -178,8 +181,11 @@ final class FanModel: @unchecked Sendable {
     }
     var history: [HistorySample] = []
     var showCurveEditor = false
-    /// Manual update check (gear menu). Deliberately never automatic: the
-    /// only network request this app makes is the one the user asks for.
+    /// Update check state. Two entry points: the gear menu (shows every
+    /// outcome) and a throttled auto-check when the popover opens (silent
+    /// unless an update is actually available, and respects the per-version
+    /// snooze a dismissal starts). The GitHub latest-release lookup is the
+    /// only network request the app makes.
     enum UpdateCheck: Equatable {
         case checking
         case upToDate
@@ -278,6 +284,7 @@ final class FanModel: @unchecked Sendable {
         popoverShown = true
         refreshLoginItemStatus()
         pollOnce(.full)
+        autoCheckForUpdates()
     }
 
     // MARK: Derived
@@ -605,9 +612,45 @@ final class FanModel: @unchecked Sendable {
         }
     }
 
-    func checkForUpdates() {
+    private static let autoCheckInterval: TimeInterval = 24 * 60 * 60
+    private static let snoozeInterval: TimeInterval = 3 * 24 * 60 * 60
+
+    func checkForUpdates() { runUpdateCheck(userInitiated: true) }
+
+    /// Popover-open hook: at most one request a day, and only the
+    /// update-available outcome ever surfaces.
+    func autoCheckForUpdates() {
+        let defaults = UserDefaults.standard
+        let last = defaults.object(forKey: lastAutoUpdateCheckKey) as? Date ?? .distantPast
+        guard Date().timeIntervalSince(last) >= Self.autoCheckInterval else { return }
+        defaults.set(Date(), forKey: lastAutoUpdateCheckKey)
+        UILog.log("auto update check")
+        runUpdateCheck(userInitiated: false)
+    }
+
+    /// Dismissing an available-update banner snoozes THAT version for three
+    /// days; a newer release ignores the snooze. Manual checks always show.
+    func dismissUpdateNotice() {
+        if case .available(let version, _, _) = updateCheck {
+            let defaults = UserDefaults.standard
+            defaults.set(version, forKey: updateSnoozeVersionKey)
+            defaults.set(Date().addingTimeInterval(Self.snoozeInterval),
+                         forKey: updateSnoozeUntilKey)
+        }
+        updateCheck = nil
+    }
+
+    private nonisolated static func isSnoozed(_ version: String) -> Bool {
+        let defaults = UserDefaults.standard
+        guard defaults.string(forKey: updateSnoozeVersionKey) == version,
+              let until = defaults.object(forKey: updateSnoozeUntilKey) as? Date
+        else { return false }
+        return Date() < until
+    }
+
+    private func runUpdateCheck(userInitiated: Bool) {
         guard updateCheck != .checking, updateCheck != .downloading else { return }
-        updateCheck = .checking
+        if userInitiated { updateCheck = .checking }
         struct Release: Decodable {
             struct Asset: Decodable {
                 let name: String
@@ -646,7 +689,16 @@ final class FanModel: @unchecked Sendable {
                                  ?? "unexpected response from GitHub")
             }
             DispatchQueue.main.async { [weak self] in
-                self?.updateCheck = result
+                guard let self else { return }
+                UILog.log("update check (\(userInitiated ? "manual" : "auto")): \(result)")
+                if userInitiated {
+                    self.updateCheck = result
+                } else if case .available(let version, _, _) = result,
+                          !Self.isSnoozed(version) {
+                    // Auto checks stay silent for up-to-date, failures, and
+                    // snoozed versions — banners the user didn't ask for.
+                    self.updateCheck = result
+                }
             }
         }.resume()
     }
