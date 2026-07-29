@@ -100,8 +100,9 @@ stop a curve the daemon is still driving.
 config path and logger so safety behavior remains testable without an SMC.
 Curves use a smoothed CPU average; watchdog decisions use the hottest CPU/GPU
 die probe (`Tp*`/`Tg*`) from the same sample — not every `T*` key, because
-some SMC "T" keys aren't die thermals and sit above 95 °C chronically
-(e.g. `Tf06` ≈ 104 °C near idle), which would cancel every override — and are
+some SMC "T" keys aren't die thermals and sit above the default limit
+chronically (e.g. `Tf06` ≈ 104 °C near idle), which would cancel every
+override — and are
 debounced to two consecutive over-limit samples so one probe spike can't
 cancel the user's mode. Three missing samples, partial
 writes, expired persisted holds, or failed restoration all return to Auto —

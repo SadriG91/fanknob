@@ -98,6 +98,11 @@ struct PopoverView: View {
                     if let error = model.controlError {
                         ErrorBanner(message: error) { model.controlError = nil }
                     }
+                    if model.watchdogTripped && !model.watchdogNoticeDismissed {
+                        ErrorBanner(message: model.watchdogNotice) {
+                            model.watchdogNoticeDismissed = true
+                        }
+                    }
                     Divider()
                     TempsSection(model: model)
                     Divider()
@@ -162,13 +167,11 @@ private struct HeaderSection: View {
             .buttonStyle(.plain)
             .help("What do the modes do?")
             Spacer()
-            if model.watchdogTripped {
-                Label("too hot — back to auto", systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption).foregroundStyle(.orange)
-                    .help("The thermal watchdog returned the fans to firmware control")
-            } else {
-                Text(model.chip).font(.caption).foregroundStyle(.secondary)
-            }
+            // The watchdog trip is reported by a dismissible banner below the
+            // header (with the daemon's measurement), not by swapping this
+            // label — squeezing a warning into the header read as an
+            // afterthought and couldn't say why the trip happened.
+            Text(model.chip).font(.caption).foregroundStyle(.secondary)
         }
     }
 }

@@ -137,7 +137,7 @@ between 20–110 °C, with temperatures at least 1 °C apart and non-decreasing
 speeds.
 
 **Thermal safety limit.** While you're overriding the fans, fanknob watches the
-temperature and hands them back to the firmware if it crosses a limit — 95 °C by
+temperature and hands them back to the firmware if it crosses a limit — 100 °C by
 default:
 
 ```sh
@@ -163,7 +163,7 @@ fanknob auto
 ## Important
 
 - A **fixed** speed means you own thermal management, not the firmware. The
-  safety limit is the backstop (95 °C by default), but prefer a **curve** if
+  safety limit is the backstop (100 °C by default), but prefer a **curve** if
   you're leaving an override on — a curve responds to heat, a fixed speed
   doesn't.
 - Return to auto when you're done: `fanknob auto`, the app's Auto button, or let

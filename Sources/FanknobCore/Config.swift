@@ -58,9 +58,13 @@ public struct DaemonConfig: Codable, Equatable, Sendable {
     /// into an indefinite override.
     public var revertAt: Date?
 
-    /// Compared against the raw hottest sensor (see DaemonEngine.tick), with
-    /// `watchdogStrikeLimit` consecutive samples required before it fires.
-    public static let defaultWatchdogCelsius: Double = 95
+    /// Compared against the raw hottest CPU/GPU die probe (see
+    /// DaemonEngine.tick), with `watchdogStrikeLimit` consecutive samples
+    /// required before it fires. Calibrated for that signal: a single core
+    /// probe routinely runs 15-20 °C above the cluster average under load
+    /// (95 tripped on every heavy compile), while Apple Silicon throttles
+    /// itself around 105-110 °C — 100 still leaves margin below that.
+    public static let defaultWatchdogCelsius: Double = 100
     public static let directory = "/Library/Application Support/fanknob"
     public static let path = directory + "/config.json"
 

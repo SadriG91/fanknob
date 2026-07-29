@@ -58,7 +58,7 @@ public final class SMCFanHardware: FanHardware {
         // under the T prefix aren't die thermals and sit above the watchdog
         // default chronically (measured: Tf06 ≈ 104 °C on an idle-ish M-series
         // machine) — feeding those to the watchdog cancels every override two
-        // ticks after it's applied. The 95 °C default is calibrated for die
+        // ticks after it's applied. The default limit is calibrated for die
         // temperatures, so die probes are what it compares against.
         let sensors = readTempsCached(smc, tempKeys)
         let all = sensors.map(\.celsius)

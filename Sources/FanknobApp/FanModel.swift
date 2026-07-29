@@ -159,6 +159,8 @@ final class FanModel: @unchecked Sendable {
     var holdRemaining = 0
     var watchdogCelsius: Double? = DaemonConfig.defaultWatchdogCelsius
     var watchdogTripped = false
+    /// The user closed the watchdog banner; re-armed when a NEW trip arrives.
+    var watchdogNoticeDismissed = false
     var safetyReason: String?
     var controlError: String?
     /// True when no daemon is running but the app could still drive fans as
@@ -302,6 +304,18 @@ final class FanModel: @unchecked Sendable {
         String(format: "%d:%02d", holdRemaining / 60, holdRemaining % 60)
     }
 
+    /// Banner text for a watchdog trip, folding in the daemon's measurement
+    /// ("watchdog: hottest 97°C >= 95°C") so the user sees why, not just that.
+    var watchdogNotice: String {
+        var text = "Too hot while overriding — the fans are back under firmware control."
+        if let reason = safetyReason, reason.hasPrefix("watchdog: ") {
+            let detail = reason.dropFirst("watchdog: ".count)
+                .replacingOccurrences(of: ">=", with: "≥")
+            text += " (\(detail))"
+        }
+        return text
+    }
+
     /// What the slider shows. In manual it's the user's setpoint; otherwise
     /// it's a live readout of what the curve or the firmware is doing — so
     /// entering manual can take over from exactly that position.
@@ -407,7 +421,10 @@ final class FanModel: @unchecked Sendable {
             }
             if curveKnob != state.knob && observed == .curve { curveKnob = state.knob }
             if watchdogCelsius != state.watchdogCelsius { watchdogCelsius = state.watchdogCelsius }
-            if watchdogTripped != state.watchdogTripped { watchdogTripped = state.watchdogTripped }
+            if watchdogTripped != state.watchdogTripped {
+                if state.watchdogTripped { watchdogNoticeDismissed = false }
+                watchdogTripped = state.watchdogTripped
+            }
             if holdRemaining != state.holdRemaining { holdRemaining = state.holdRemaining }
             if safetyReason != state.safetyReason { safetyReason = state.safetyReason }
         }
