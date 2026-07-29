@@ -1,4 +1,4 @@
-# Build + unit tests on every push/PR. Runs on an Apple Silicon macOS runner.
+# Build + unit tests for code and packaging changes. Runs on Apple Silicon.
 # (The UI acceptance test — make ui-test — needs live SMC hardware and
 # Accessibility permission, so it stays a dev-machine test.)
 name: CI
@@ -14,6 +14,7 @@ on:
       - "app/**"
       - "assets/AppIcon.icns"   # bundled into the app; verified by CI
       - "packaging/**"
+      - "scripts/test-preinstall.sh"
       - ".github/workflows/ci.yml"
   pull_request:
     paths:
@@ -24,6 +25,7 @@ on:
       - "app/**"
       - "assets/AppIcon.icns"
       - "packaging/**"
+      - "scripts/test-preinstall.sh"
       - ".github/workflows/ci.yml"
 
 permissions:
@@ -39,6 +41,9 @@ jobs:
         os: [macos-15, macos-26]
     steps:
       - uses: actions/checkout@v7
+
+      - name: Test installer guard
+        run: make test-preinstall
 
       - name: Build (release)
         run: swift build -c release

@@ -20,13 +20,14 @@ Sources/
   FanknobApp/    the SwiftUI menu-bar app
 Tests/           unit tests for the pure logic in FanknobCore
 app/Info.plist   app bundle metadata
-packaging/       installer package definition + postinstall script
+  packaging/       installer package definition + pre/postinstall scripts
 scripts/         icon generation and the UI acceptance harness
 com.fanknob.daemon.plist
 ```
 
-Building the app needs the macOS SDK from Xcode or the Command Line Tools. On an
-Xcode license error: `sudo xcodebuild -license accept`.
+Building requires Swift 6 and the macOS 15 SDK, provided by Xcode 16 or newer
+(or its Command Line Tools). On an Xcode license error:
+`sudo xcodebuild -license accept`.
 
 ## Build from source
 
@@ -60,6 +61,7 @@ make print-version   # the version, for scripts
 make clean
 sudo make install
 sudo make uninstall
+make test-preinstall # exercise the package/source-install guard
 ```
 
 `make install` only *copies*, never builds — building as root would leave
@@ -72,12 +74,18 @@ as yourself.
 make test                                        # or: swift test
 swift test --filter DaemonProtocolTests          # one suite
 swift test --filter DaemonProtocolTests/plainSet # one test
+python3 scripts/check-docs.py                    # local documentation links/assets
 ```
 
 Unit tests cover the pure logic in `FanknobCore` — codecs, knob math, temperature
 clustering, curves, config round-trips, the daemon protocol parser. They need no
-hardware, root or daemon, so CI runs them on every push. They use
+hardware, root or daemon, so CI runs them whenever code, tests, packaging or
+build configuration changes. They use
 [Swift Testing](https://developer.apple.com/documentation/testing).
+
+`make test-preinstall` exercises the installer guard against clean,
+source-installed and package-upgrade fixtures. CI also checks that the guard is
+present in the built package.
 
 ### UI acceptance tests
 
@@ -169,6 +177,11 @@ The root daemon accepts only `set`, `setfan`, `curve`, `preset`, `watchdog`,
 `auto` and `state`, each validated and range-checked by one pure function —
 `parseDaemonCommand` in `Daemon.swift` — before anything reaches the SMC. Any
 local user can connect, but can't drive it to do anything except move fans.
+That is an explicit trust decision, not per-user authorization: fan control is
+system-wide, and any local account can change the active mode, safety limit and
+persisted settings. Keep the shared-Mac warning in the README and landing page
+in sync with this behavior.
+
 **Adding a command touches four places:** the `DaemonCommand` enum and its
 parser, `Controller.handle`, the `FanController` facade, and the callers. Keep
 the validation in the parser so it stays testable without hardware.
@@ -180,13 +193,17 @@ that simply exited would leave them pinned with nothing left to move them.
 
 ## Packaging
 
-Two details in `packaging/` are load-bearing and easy to undo by accident:
+Three details in `packaging/` are load-bearing and easy to undo by accident:
 
 - **`component.plist` sets `BundleIsRelocatable=false`.** pkgbuild treats `.app`
   bundles as relocatable by default, so Installer asks LaunchServices where
   `com.fanknob.app` already lives and installs *there* — leaving `/Applications`
   empty on any machine that has ever opened a copy from `~/Downloads`. Shipped
   that way in 1.4.0; CI now greps the built package for `relocatable="false"`.
+- **`scripts/preinstall` keeps install ownership unambiguous.** It refuses to
+  put the package on top of a source-built copy with no package receipt; the
+  Makefile checks the opposite direction. `make test-preinstall` covers clean
+  installs, conflicts and package upgrades.
 - **`scripts/postinstall` is why this ships as a `.pkg` at all.** Installer is
   already root, so it loads the daemon and waits for the socket before declaring
   success — fan control works the moment the install finishes.

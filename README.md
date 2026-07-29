@@ -109,6 +109,9 @@ fanknob set 60 --fan 1        # just fan 1; the others keep their setpoints
 fanknob set 60 --for 120      # hold 60% for two minutes, then back to automatic
 ```
 
+Fan numbers are zero-based (`0`, `1`, …). Run `fanknob status` to see which fans
+your Mac exposes before using `--fan`.
+
 **Curves.** Instead of pinning a fixed speed, hand the fans to a curve and they
 track CPU temperature for you — quiet when idle, ramping as it heats:
 
@@ -153,6 +156,9 @@ fanknob auto
   doesn't.
 - Return to auto when you're done: `fanknob auto`, the app's Auto button, or let
   a hold expire on its own.
+- Fan control is system-wide. On a shared Mac, any local account can change the
+  fan speed, mode and saved safety settings, so only install fanknob if you trust
+  the machine's local users.
 - MacBook Air is fanless — there's nothing to control there.
 
 ## Command line

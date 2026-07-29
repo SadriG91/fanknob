@@ -4,6 +4,7 @@
 #   make app             assemble Fanknob.app (menu-bar app)
 #   make run-app         build + assemble + launch the app
 #   make shots           re-render the documentation screenshots
+#   make test-preinstall exercise the package/source-install guard
 #   make pkg             build an unsigned installer .pkg (local testing)
 #   make pkg-signed      build a Developer ID signed .pkg
 #   make notarize        notarize + staple the signed .pkg
@@ -36,7 +37,7 @@ SIGN_APP ?= Developer ID Application
 SIGN_PKG ?= Developer ID Installer
 NOTARY_PROFILE ?= fanknob-notary
 
-.PHONY: all app run-app stage pkg pkg-signed notarize print-version test ui-test shots clean install uninstall
+.PHONY: all app run-app stage pkg pkg-signed notarize print-version test test-preinstall ui-test shots clean install uninstall
 
 all:
 	$(SWIFT_BUILD)
@@ -48,6 +49,10 @@ print-version:
 # Unit tests (pure logic: codecs, knob math, temp clustering, daemon protocol).
 test:
 	swift test
+
+# Package-script behavior (clean install, source conflict, package upgrade).
+test-preinstall:
+	scripts/test-preinstall.sh
 
 # UI acceptance test for the menu-bar app's toggle (real synthetic clicks).
 # Needs: app running, daemon installed, terminal with Accessibility permission.

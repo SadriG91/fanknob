@@ -22,6 +22,7 @@ make pkg                      # unsigned installer .pkg for local testing
 make print-version            # the version, for scripts
 sudo make install             # copy artifacts to the system + load the daemon
 sudo make uninstall
+make test-preinstall          # package/source-install guard fixtures
 make ui-test                  # UI acceptance tests (see below)
 ```
 
@@ -69,7 +70,12 @@ command, a root daemon under launchd owns all writes and exposes a Unix socket
 (`/var/run/fanknobd.sock`, mode 0666) that any local user can connect to. What
 keeps that safe is that `parseDaemonCommand` (`Daemon.swift`) is a pure function
 that validates and clamps *every* command before anything reaches the SMC — the
-daemon accepts nothing else. **Adding a command means touching four places:**
+daemon accepts nothing else. Mode 0666 is an explicit trust decision, not
+per-user authorization: fan control is system-wide, and any local account can
+change and persist its settings. Keep the shared-Mac warning in the README and
+landing page aligned with this behavior.
+
+**Adding a command means touching four places:**
 the `DaemonCommand` enum + parser, `Controller.handle` in `fanknobd/Main.swift`,
 the `FanController` facade, and the CLI/app callers. Keep validation in the
 parser so it stays unit-testable without hardware.
@@ -142,12 +148,15 @@ release.yml` builds, signs (Developer ID), notarizes, publishes the `.pkg`, and
 bumps the Homebrew cask in `SadriG91/homebrew-tap`. CI (`ci.yml`) builds and
 tests on both `macos-15` (deployment floor) and `macos-26` (release SDK).
 
-Two packaging details that are load-bearing and easy to undo:
+Three packaging details are load-bearing and easy to undo:
 
 - `packaging/component.plist` sets `BundleIsRelocatable=false`. Without it,
   pkgbuild marks the `.app` relocatable and Installer asks LaunchServices where
   `com.fanknob.app` already lives — installing over a stray copy and leaving
   `/Applications` empty. CI greps `PackageInfo` for `relocatable="false"`.
+- `packaging/scripts/preinstall` refuses to put the package over a source-built
+  copy with no receipt; the Makefile guards the opposite direction. Keep
+  `make test-preinstall` covering clean installs, conflicts and upgrades.
 - `packaging/scripts/postinstall` is why this ships as a `.pkg` at all: Installer
   is already root, so it loads the daemon and waits for the socket to appear.
 

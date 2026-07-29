@@ -408,10 +408,10 @@
            seconds and adjusts.</p>
       </div>
       <div>
-        <h3>It won't let things cook</h3>
-        <p>If your Mac gets genuinely hot while you're overriding the fans,
-           fanknob gives them back to the firmware at 95 °C. You can move that
-           line, or switch it off if you'd rather.</p>
+        <h3>A thermal backstop</h3>
+        <p>While you're overriding the fans, fanknob watches the temperature
+           and hands them back to the firmware at 95 °C by default. You can
+           move that line, or switch it off if you'd rather.</p>
       </div>
       <div>
         <h3>There's a CLI too</h3>
@@ -425,11 +425,14 @@
   <section class="band">
     <p class="note">
       <b>One thing worth knowing.</b> If you pin the fans to a fixed speed,
-      you're the one managing heat now, not your Mac. The 95 °C limit will catch
-      you, but a curve is the better bet if you're leaving something running —
-      it reacts, a fixed speed just sits there. Switch back to auto when you're
-      done, or set a hold and let it expire by itself. (MacBook Airs don't have
-      fans, so there's nothing to do there.)
+      you're the one managing heat now, not your Mac. The 95 °C limit is a
+      backstop, but a curve is the better bet if you're leaving something
+      running — it reacts, a fixed speed just sits there. Switch back to auto
+      when you're done, or set a hold and let it expire by itself. Fan control is
+      system-wide: on a shared Mac, any local account can change the fan speed,
+      mode and saved safety settings, so only install fanknob if you trust the
+      machine's local users. (MacBook Airs don't have fans, so there's nothing
+      to do there.)
     </p>
   </section>
 
