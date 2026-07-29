@@ -264,12 +264,26 @@ final class FanModel: @unchecked Sendable {
     private func timerFired() {
         tick += 1
         let visible = popoverIsVisible
-        if popoverShown != visible { popoverShown = visible }
+        if popoverShown != visible {
+            popoverShown = visible
+            // Closing the popover leaves whatever pane was showing; the next
+            // open should always start on the main view.
+            if !visible { resetToMainPane() }
+        }
         if visible {
             pollOnce(.full)
         } else if tick % 5 == 0 {
             pollOnce(.light)
         }
+    }
+
+    /// Animation-suppressed: this runs while the window is hidden (or in the
+    /// same frame it reappears), and the pane-push transition must not play.
+    func resetToMainPane() {
+        guard showCurveEditor else { return }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { showCurveEditor = false }
     }
 
     /// The MenuBarExtra content window, when shown. The status item itself is
@@ -282,6 +296,9 @@ final class FanModel: @unchecked Sendable {
     /// the UI is fresh the moment it opens, instead of one tick later.
     func popoverOpened() {
         popoverShown = true
+        // Fallback for a close+reopen inside one timer tick, where
+        // timerFired never saw the popover disappear.
+        resetToMainPane()
         refreshLoginItemStatus()
         pollOnce(.full)
         autoCheckForUpdates()

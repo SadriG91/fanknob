@@ -96,14 +96,28 @@ private struct ParallaxUnder: ViewModifier {
     }
 }
 
+/// Secondary panes (editor, help) slide in from the right as an OPAQUE card
+/// with a soft leading-edge shadow. The opacity is the load-bearing part:
+/// transparent panes let the receding main view bleed through the incoming
+/// content mid-flight, text blending with text. At rest the card fills the
+/// window, so the backing color and the (clipped) off-edge shadow are
+/// invisible; both only show while the card is travelling over the page
+/// beneath it.
+private struct SlideOverCard: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .background(Color(nsColor: .windowBackgroundColor))
+            .shadow(color: .black.opacity(0.35), radius: 12, x: -6)
+            .transition(.move(edge: .trailing))
+    }
+}
+
 struct PopoverView: View {
     var model: FanModel
     @State private var showingHelp = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// Secondary panes (editor, help) slide in full-bleed from the right;
-    /// the main view recedes underneath with parallax.
-    private static let pushIn: AnyTransition = .move(edge: .trailing)
+    /// The main view recedes underneath an incoming pane with parallax.
     private static let recede: AnyTransition = .modifier(
         active: ParallaxUnder(active: true),
         identity: ParallaxUnder(active: false)
@@ -114,11 +128,11 @@ struct PopoverView: View {
             if model.showCurveEditor {
                 CurveEditorView(model: model) { model.showCurveEditor = false }
                     .padding(16)
-                    .transition(Self.pushIn)
+                    .modifier(SlideOverCard())
             } else if showingHelp {
                 HelpView { showingHelp = false }
                     .padding(16)
-                    .transition(Self.pushIn)
+                    .modifier(SlideOverCard())
             } else {
                 VStack(alignment: .leading, spacing: 14) {
                     HeaderSection(model: model) { showingHelp = true }
@@ -167,7 +181,14 @@ struct PopoverView: View {
                    value: model.showCurveEditor)
         .animation(reduceMotion ? nil : .smooth(duration: 0.3),
                    value: showingHelp)
-        .onAppear { model.popoverOpened() }   // fresh data the moment it opens
+        .onAppear {
+            model.popoverOpened()   // fresh data the moment it opens
+            // Reopen on the main view, never mid-help (the editor's version
+            // of this lives in FanModel.resetToMainPane).
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { showingHelp = false }
+        }
     }
 }
 
