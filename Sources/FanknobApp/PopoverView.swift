@@ -183,8 +183,9 @@ struct PopoverView: View {
         // unanimated step — measured: a 320→420 pane swap teleported the
         // window 359 pt left on the first frame while the content was still
         // sliding. With a constant width the window never moves and the
-        // navigation is pure in-window animation.
-        .frame(width: 380)
+        // navigation is pure in-window animation. 320 keeps the main view
+        // exactly as designed; the editor adapts to the narrower graph.
+        .frame(width: 320)
         .clipped()
         // The pop is tuned quicker than the push (the animation is picked
         // from the NEW value when the change lands), matching
