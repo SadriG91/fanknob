@@ -52,14 +52,22 @@ public final class SMCFanHardware: FanHardware {
 
     public func thermalSample() -> ThermalSample? {
         // Read every discovered key once. Curves retain the stable CPU-cluster
-        // average, while the watchdog sees the hottest valid sensor anywhere
-        // in the machine (including GPU and board sensors).
+        // average; the watchdog sees the hottest CPU or GPU die probe.
+        //
+        // The safety set is deliberately NOT "every T* key": some SMC keys
+        // under the T prefix aren't die thermals and sit above the watchdog
+        // default chronically (measured: Tf06 ≈ 104 °C on an idle-ish M-series
+        // machine) — feeding those to the watchdog cancels every override two
+        // ticks after it's applied. The 95 °C default is calibrated for die
+        // temperatures, so die probes are what it compares against.
         let sensors = readTempsCached(smc, tempKeys)
         let all = sensors.map(\.celsius)
         let cpu = sensors.filter { $0.key.hasPrefix("Tp") }.map(\.celsius)
+        let gpu = sensors.filter { $0.key.hasPrefix("Tg") }.map(\.celsius)
+        let dies = cpu + gpu
         return ThermalSample(
             averageTemperatures: cpu.isEmpty ? all : cpu,
-            safetyTemperatures: all
+            safetyTemperatures: dies.isEmpty ? all : dies
         )
     }
 

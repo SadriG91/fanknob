@@ -98,9 +98,12 @@ stop a curve the daemon is still driving.
 
 **Daemon lifecycle invariants.** `DaemonEngine` receives `FanHardware`, a clock,
 config path and logger so safety behavior remains testable without an SMC.
-Curves use a smoothed CPU average; watchdog decisions use the hottest sensor
-from the same sample, debounced to two consecutive over-limit samples so one
-probe spike can't cancel the user's mode. Three missing samples, partial
+Curves use a smoothed CPU average; watchdog decisions use the hottest CPU/GPU
+die probe (`Tp*`/`Tg*`) from the same sample — not every `T*` key, because
+some SMC "T" keys aren't die thermals and sit above 95 °C chronically
+(e.g. `Tf06` ≈ 104 °C near idle), which would cancel every override — and are
+debounced to two consecutive over-limit samples so one probe spike can't
+cancel the user's mode. Three missing samples, partial
 writes, expired persisted holds, or failed restoration all return to Auto —
 always via `transitionToAutomatic`, never an inline revert: only the
 transition path arms the automatic-retry flag and surfaces a `safetyReason`
