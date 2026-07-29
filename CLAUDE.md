@@ -99,8 +99,14 @@ stop a curve the daemon is still driving.
 **Daemon lifecycle invariants.** `DaemonEngine` receives `FanHardware`, a clock,
 config path and logger so safety behavior remains testable without an SMC.
 Curves use a smoothed CPU average; watchdog decisions use the hottest sensor
-from the same sample. Three missing samples, partial writes, expired persisted
-holds, or failed restoration all return to Auto.
+from the same sample, debounced to two consecutive over-limit samples so one
+probe spike can't cancel the user's mode. Three missing samples, partial
+writes, expired persisted holds, or failed restoration all return to Auto —
+always via `transitionToAutomatic`, never an inline revert: only the
+transition path arms the automatic-retry flag and surfaces a `safetyReason`
+when the hand-back write itself fails. `DaemonConfig.load` salvages
+field-wise, so one field an older build persisted under looser rules can't
+silently reset the others (notably the watchdog).
 
 The SMC holds `FiMd = 1` until something writes
 0 back, so a daemon that just exits strands the fans at their last target.

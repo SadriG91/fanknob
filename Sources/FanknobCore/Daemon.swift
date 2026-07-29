@@ -18,6 +18,15 @@ public let fanknobdLockPath = "/var/run/fanknobd.lock"
 public let daemonProtocolVersion = 2
 public let maximumHoldSeconds = 24 * 60 * 60
 public let maximumDaemonLineBytes = 2048
+public let maximumWatchdogCelsius: Double = 120
+
+/// The one definition of an acceptable watchdog threshold. The CLI, the
+/// protocol parser and persisted-config validation must all agree — a value
+/// one of them accepts but another rejects gets silently discarded as corrupt
+/// on the next daemon boot.
+public func isValidWatchdogCelsius(_ celsius: Double) -> Bool {
+    celsius.isFinite && celsius > 0 && celsius <= maximumWatchdogCelsius
+}
 
 /// Try to become the single fanknobd instance system-wide (e.g. a Homebrew-
 /// managed daemon and a `make install` one must not fight over the socket).
@@ -152,7 +161,7 @@ public func parseDaemonCommand(_ line: String) -> Result<DaemonCommand, DaemonCo
     case "watchdog":
         guard parts.count == 2 else { return .failure(.badWatchdog) }
         if parts[1].lowercased() == "off" { return .success(.watchdog(celsius: nil)) }
-        guard let c = Double(parts[1]), c.isFinite, c > 0, c <= 120 else {
+        guard let c = Double(parts[1]), isValidWatchdogCelsius(c) else {
             return .failure(.badWatchdog)
         }
         return .success(.watchdog(celsius: c))

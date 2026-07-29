@@ -245,6 +245,62 @@ import Foundation
         #expect(DaemonConfig.load(from: "/nonexistent/fanknob.json") == nil)
     }
 
+    // MARK: field-wise salvage (one bad field must not reset the others)
+
+    private func scratchPath() -> String {
+        NSTemporaryDirectory() + "fanknob-salvage-\(UUID().uuidString).json"
+    }
+
+    @Test func invalidPersistedCurveKeepsWatchdogAndFallsBackToAuto() throws {
+        let path = scratchPath()
+        defer { unlink(path) }
+        #expect(DaemonConfig(mode: .curve(CurvePreset.quiet.curve, preset: .quiet),
+                             watchdogCelsius: 90).save(to: path))
+        // Corrupt the curve the way an older build's looser rules could have:
+        // move the 55 °C point to 10 °C, outside today's supported range.
+        let text = try String(contentsOfFile: path, encoding: .utf8)
+            .replacingOccurrences(of: "55", with: "10")
+        try text.write(toFile: path, atomically: true, encoding: .utf8)
+
+        let loaded = DaemonConfig.load(from: path)
+        #expect(loaded != nil)
+        #expect(loaded?.mode == .auto)
+        #expect(loaded?.watchdogCelsius == 90)   // the safety setting survives
+    }
+
+    @Test func outOfRangeWatchdogFallsBackToDefaultKeepingMode() {
+        let path = scratchPath()
+        defer { unlink(path) }
+        let knobs = [FanKnob(index: 0, pct: 40)]
+        #expect(DaemonConfig(mode: .manual(knobs), watchdogCelsius: 500).save(to: path))
+
+        let loaded = DaemonConfig.load(from: path)
+        #expect(loaded?.mode == .manual(knobs))
+        #expect(loaded?.watchdogCelsius == DaemonConfig.defaultWatchdogCelsius)
+    }
+
+    @Test func explicitlyDisabledWatchdogSurvivesSalvage() throws {
+        let path = scratchPath()
+        defer { unlink(path) }
+        #expect(DaemonConfig(mode: .curve(CurvePreset.quiet.curve, preset: .quiet),
+                             watchdogCelsius: nil).save(to: path))
+        let text = try String(contentsOfFile: path, encoding: .utf8)
+            .replacingOccurrences(of: "55", with: "10")
+        try text.write(toFile: path, atomically: true, encoding: .utf8)
+
+        let loaded = DaemonConfig.load(from: path)
+        #expect(loaded != nil)
+        // "off" was a deliberate choice — salvage must not re-arm it at 95.
+        #expect(loaded?.watchdogCelsius == Double?.none)
+    }
+
+    @Test func unreadableFileLoadsNil() throws {
+        let path = scratchPath()
+        defer { unlink(path) }
+        try "not json at all".write(toFile: path, atomically: true, encoding: .utf8)
+        #expect(DaemonConfig.load(from: path) == nil)
+    }
+
     @Test func stateWireFormatRoundtrips() {
         let s = DaemonState(mode: "curve", preset: "quiet", curve: "55:0,90:100",
                             knob: 42, watchdogCelsius: 95, watchdogTripped: true,
@@ -391,7 +447,7 @@ private final class MockFanHardware: FanHardware {
         NSTemporaryDirectory() + "fanknob-engine-\(UUID().uuidString).json"
     }
 
-    @Test func watchdogUsesHottestRawSensor() {
+    @Test func watchdogUsesHottestRawSensorAfterConsecutiveStrikes() {
         let hardware = MockFanHardware()
         hardware.samples = [[70, 100]]
         let configPath = path()
@@ -400,12 +456,33 @@ private final class MockFanHardware: FanHardware {
 
         #expect(engine.handle("set 40").ok)
         engine.tick()
+        // One over-limit sample is a strike, not a trip.
+        #expect(engine.currentState().mode == "manual")
+        #expect(!engine.currentState().watchdogTripped)
+        engine.tick()
 
         let state = engine.currentState()
         #expect(state.mode == "auto")
         #expect(state.watchdogTripped)
         #expect(state.hottestCelsius == 100)
         #expect(hardware.automaticCalls == [0, 1])
+    }
+
+    @Test func watchdogIgnoresSingleSampleSpike() {
+        let hardware = MockFanHardware()
+        hardware.samples = [[70, 100], [70, 72]]   // one probe burst, then normal
+        let configPath = path()
+        defer { unlink(configPath) }
+        let engine = DaemonEngine(hardware: hardware, configPath: configPath)
+
+        #expect(engine.handle("set 40").ok)
+        engine.tick()
+        engine.tick()
+        engine.tick()
+
+        #expect(engine.currentState().mode == "manual")
+        #expect(!engine.currentState().watchdogTripped)
+        #expect(hardware.automaticCalls.isEmpty)
     }
 
     @Test func thermalSampleSeparatesCurveAverageFromSafetyMaximum() {
@@ -494,6 +571,55 @@ private final class MockFanHardware: FanHardware {
         #expect(!reply.ok)
         #expect(engine.currentState().mode == "auto")
         #expect(hardware.automaticCalls == [0, 1])
+    }
+
+    @Test func failedManualRevertSetsReasonAndIsRetried() {
+        let hardware = MockFanHardware()
+        hardware.failingFans = [1]
+        hardware.failingAutomaticFans = [0]
+        let configPath = path()
+        defer { unlink(configPath) }
+        let engine = DaemonEngine(hardware: hardware, configPath: configPath)
+
+        // Fan 0 is written, fan 1 fails, and the hand-back write for fan 0
+        // fails too — the exact stranding scenario: the revert must arm the
+        // retry machinery and surface a reason, not silently report "auto".
+        #expect(!engine.handle("set 60").ok)
+        #expect(engine.currentState().mode == "auto")
+        #expect(engine.currentState().safetyReason != nil)
+
+        hardware.failingAutomaticFans = []
+        engine.tick()
+        #expect(hardware.automaticCalls == [0, 1, 0, 1])
+    }
+
+    @Test func manualSetWithZeroFansIsRejected() {
+        let hardware = MockFanHardware()
+        hardware.fanIndices = []
+        let configPath = path()
+        defer { unlink(configPath) }
+        let engine = DaemonEngine(hardware: hardware, configPath: configPath)
+
+        #expect(!engine.handle("set 50").ok)
+        #expect(engine.currentState().mode == "auto")
+        #expect(hardware.setCalls.isEmpty)
+        // Nothing must be persisted: a daemon restart should come up in auto.
+        #expect(DaemonConfig.load(from: configPath) == nil)
+    }
+
+    @Test func autoModeKeepsSamplingSoStateStaysFresh() {
+        let hardware = MockFanHardware()
+        hardware.samples = [[60, 96], [40, 45]]
+        let configPath = path()
+        defer { unlink(configPath) }
+        let engine = DaemonEngine(hardware: hardware, configPath: configPath)
+
+        engine.tick()
+        #expect(engine.currentState().hottestCelsius == 96)
+        // Idle in auto: hottest (and the curve EMA) must track reality, not
+        // freeze at the value from whenever the daemon last left auto.
+        engine.tick()
+        #expect(engine.currentState().hottestCelsius == 45)
     }
 
     @Test func failedAutomaticWritesAreRetried() {

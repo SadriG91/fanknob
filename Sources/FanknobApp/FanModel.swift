@@ -143,7 +143,14 @@ final class FanModel: @unchecked Sendable {
     var fanKnobs: [Int: Double] = [:]
     var linkFans = true
 
+    /// The last preset the user picked. When `customCurve` is non-nil the
+    /// active curve did NOT come from this — the preset picker must show no
+    /// selection, and a Manual→Curve round-trip must re-apply the custom
+    /// curve, not silently replace it with this preset.
     var preset: CurvePreset = .balanced
+    /// The active custom curve, mirrored from the daemon (`state.preset` nil
+    /// while in curve mode means the curve is custom).
+    var customCurve: FanCurve?
     /// What the curve is asking for right now (daemon-reported).
     var curveKnob: Double?
 
@@ -343,7 +350,6 @@ final class FanModel: @unchecked Sendable {
         if canWrite != writable { canWrite = writable }
         if daemonPresent != (state != nil) { daemonPresent = state != nil }
         if lastDaemonState != state { lastDaemonState = state }
-        recordHistory(snap)
         handleNotificationTransitions(state)
 
         let shownTemp = (snap.temps.cpu ?? snap.temps.gpu).map { Int($0.rounded()) }
@@ -372,11 +378,26 @@ final class FanModel: @unchecked Sendable {
 
         guard !editing, writesInFlight == 0, pendingMode == nil else { return }
 
+        // Behind the gate on purpose: appending mid-drag or mid-write
+        // invalidates HistorySection during the exact window the intent guard
+        // exists to protect (a 5 s sampler can afford to skip a beat).
+        recordHistory(snap)
+
         let observed = observedMode(snap: snap, state: state)
         if mode != observed { mode = observed }
 
         if let state {
-            if let p = state.preset.flatMap(CurvePreset.init(rawValue:)), preset != p { preset = p }
+            if let p = state.preset.flatMap(CurvePreset.init(rawValue:)) {
+                if preset != p { preset = p }
+                if customCurve != nil { customCurve = nil }
+            } else if observed == .curve {
+                // Curve mode with no preset name = a custom curve. Track it,
+                // or the picker claims the last preset is active and a
+                // Manual→Curve round-trip re-sends that preset, silently
+                // discarding the user's curve.
+                let parsed = state.curve.flatMap(FanCurve.parse)
+                if customCurve != parsed { customCurve = parsed }
+            }
             if curveKnob != state.knob && observed == .curve { curveKnob = state.knob }
             if watchdogCelsius != state.watchdogCelsius { watchdogCelsius = state.watchdogCelsius }
             if watchdogTripped != state.watchdogTripped { watchdogTripped = state.watchdogTripped }
@@ -443,7 +464,13 @@ final class FanModel: @unchecked Sendable {
             knob = displayKnob
             applyKnob()
         case .curve:
-            selectPreset(preset)
+            // Restore what was actually driving the fans last time: the
+            // user's custom curve if one is active, else the last preset.
+            if let custom = customCurve {
+                applyCustomCurve(custom)
+            } else {
+                selectPreset(preset)
+            }
         }
     }
 
@@ -496,6 +523,7 @@ final class FanModel: @unchecked Sendable {
     func selectPreset(_ p: CurvePreset) {
         guard canWrite, daemonPresent else { return }
         preset = p
+        customCurve = nil
         intend(.curve)
         holdRemaining = 0
         performWrite { $0.setPreset(p) }
@@ -505,7 +533,7 @@ final class FanModel: @unchecked Sendable {
         guard canWrite, daemonPresent else { return }
         intend(.curve)
         holdRemaining = 0
-        preset = .balanced
+        customCurve = curve
         performWrite { $0.setCurve(curve) }
     }
 

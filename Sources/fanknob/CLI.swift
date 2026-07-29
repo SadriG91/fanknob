@@ -326,75 +326,122 @@ private func usage() {
     """)
 }
 
-/// Validate the complete invocation before opening the SMC. Besides producing
-/// normal usage errors on machines where hardware access is unavailable, this
-/// guarantees NaN/∞ and malformed options never reach integer conversion or a
-/// control path.
-private func invocationError(_ arguments: [String]) -> String? {
-    guard let command = arguments.first else { return nil }
+/// A fully validated invocation. Parsing happens exactly once, before the SMC
+/// is opened: usage errors work on machines where hardware access is
+/// unavailable, NaN/∞ and malformed options never reach integer conversion or
+/// a control path, and `main` only executes what this produced — there is no
+/// second copy of the grammar to drift out of sync.
+private enum Invocation {
+    case status(json: Bool)
+    case diagnose
+    case temp
+    case tui
+    case bench
+    case keys(prefix: String)
+    case set(percent: Double, fan: Int?, holdSeconds: Int)
+    case auto
+    case preset(CurvePreset)
+    case curve(FanCurve)
+    case watchdog(String)   // validated: "off" or a temperature in range
+}
+
+/// String-backed so the parser can return `.failure("usage: ...")` directly.
+private struct UsageError: Error, ExpressibleByStringInterpolation {
+    let message: String
+    init(stringLiteral value: String) { message = value }
+}
+
+private func parseInvocation(_ arguments: [String]) -> Result<Invocation, UsageError> {
+    let command = arguments[0]
     switch command {
     case "status":
-        return arguments.count == 1
-            || (arguments.count == 2 && arguments[1] == "--json")
-            ? nil : "usage: fanknob status [--json]"
+        guard arguments.count == 1
+                || (arguments.count == 2 && arguments[1] == "--json") else {
+            return .failure("usage: fanknob status [--json]")
+        }
+        return .success(.status(json: arguments.count == 2))
+
     case "diagnose":
-        return arguments == ["diagnose", "--json"]
-            ? nil : "usage: fanknob diagnose --json"
+        guard arguments == ["diagnose", "--json"] else {
+            return .failure("usage: fanknob diagnose --json")
+        }
+        return .success(.diagnose)
+
     case "temp", "tui", "top", "bench", "auto":
-        return arguments.count == 1 ? nil : "unexpected option for \(command)"
+        guard arguments.count == 1 else {
+            return .failure("unexpected option for \(command)")
+        }
+        switch command {
+        case "temp": return .success(.temp)
+        case "bench": return .success(.bench)
+        case "auto": return .success(.auto)
+        default: return .success(.tui)
+        }
+
     case "keys":
-        return arguments.count <= 2 ? nil : "usage: fanknob keys [prefix]"
+        guard arguments.count <= 2 else {
+            return .failure("usage: fanknob keys [prefix]")
+        }
+        return .success(.keys(prefix: arguments.count == 2 ? arguments[1] : "F"))
+
     case "set":
         guard arguments.count >= 2,
               let value = Double(arguments[1]), value.isFinite else {
-            return "usage: fanknob set <0-100> [--fan <n>] [--for <seconds>]"
+            return .failure("usage: fanknob set <0-100> [--fan <n>] [--for <seconds>]")
         }
+        var hold = 0
+        var fan: Int?
         var index = 2
         while index < arguments.count {
-            guard index + 1 < arguments.count else {
-                return "missing value for \(arguments[index])"
+            let option = arguments[index]
+            guard option == "--for" || option == "--fan" else {
+                return .failure("unknown option: \(option)")
             }
-            switch arguments[index] {
-            case "--for":
+            guard index + 1 < arguments.count else {
+                return .failure("missing value for \(option)")
+            }
+            if option == "--for" {
                 guard let seconds = Int(arguments[index + 1]),
                       (0...maximumHoldSeconds).contains(seconds) else {
-                    return "--for must be between 0 and \(maximumHoldSeconds)"
+                    return .failure("--for must be between 0 and \(maximumHoldSeconds)")
                 }
-            case "--fan":
-                guard let fan = Int(arguments[index + 1]), fan >= 0 else {
-                    return "--fan must be a non-negative integer"
+                hold = seconds
+            } else {
+                guard let parsed = Int(arguments[index + 1]), parsed >= 0 else {
+                    return .failure("--fan must be a non-negative integer")
                 }
-            default:
-                return "unknown option: \(arguments[index])"
+                fan = parsed
             }
             index += 2
         }
-        return nil
+        return .success(.set(percent: value.clamped(0, 100), fan: fan, holdSeconds: hold))
+
     case "preset":
         guard arguments.count == 2,
-              CurvePreset(rawValue: arguments[1].lowercased()) != nil else {
-            return "usage: fanknob preset quiet|balanced|turbo"
+              let preset = CurvePreset(rawValue: arguments[1].lowercased()) else {
+            return .failure("usage: fanknob preset quiet|balanced|turbo")
         }
-        return nil
+        return .success(.preset(preset))
+
     case "curve":
-        guard arguments.count == 2, FanCurve.parse(arguments[1]) != nil else {
-            return "curve requires 2–12 safe points formatted as °C:%"
+        guard arguments.count == 2, let curve = FanCurve.parse(arguments[1]) else {
+            return .failure("curve requires 2–12 safe points formatted as °C:%")
         }
-        return nil
+        return .success(.curve(curve))
+
     case "watchdog":
         guard arguments.count == 2 else {
-            return "usage: fanknob watchdog <°C>|off"
+            return .failure("usage: fanknob watchdog <°C>|off")
         }
         let value = arguments[1].lowercased()
         guard value == "off"
-                || (Double(value).map {
-                    $0.isFinite && $0 > 0 && $0 <= 120
-                } ?? false) else {
-            return "watchdog must be a temperature from 1–120, or off"
+                || Double(value).map({ isValidWatchdogCelsius($0) }) == true else {
+            return .failure("watchdog must be a temperature from 1–\(Int(maximumWatchdogCelsius)), or off")
         }
-        return nil
+        return .success(.watchdog(value))
+
     default:
-        return "unknown command: \(command)"
+        return .failure("unknown command: \(command)")
     }
 }
 
@@ -421,74 +468,39 @@ struct Fanknob {
             return
         }
 
-        if let error = invocationError(arguments) {
-            stderr(error)
+        let invocation: Invocation
+        switch parseInvocation(arguments) {
+        case .failure(let error):
+            stderr(error.message)
             exit(2)
+        case .success(let parsed):
+            invocation = parsed
         }
 
         guard let smc = openSMC() else { exit(1) }
         defer { smc.close() }
         var success = true
 
-        switch command {
-        case "status":
-            guard arguments.count == 1
-                    || (arguments.count == 2 && arguments[1] == "--json")
-            else { usage(); exit(2) }
-            success = cmdStatus(smc, json: arguments.count == 2)
+        switch invocation {
+        case .status(let json):
+            success = cmdStatus(smc, json: json)
 
-        case "diagnose":
-            guard arguments == ["diagnose", "--json"] else { usage(); exit(2) }
+        case .diagnose:
             success = printJSON(collectDiagnostics(smc))
 
-        case "temp":
-            guard arguments.count == 1 else { usage(); exit(2) }
+        case .temp:
             success = cmdTemp(smc)
 
-        case "tui", "top":
-            guard arguments.count == 1 else { usage(); exit(2) }
+        case .tui:
             runTUI(smc)
 
-        case "bench":
-            guard arguments.count == 1 else { usage(); exit(2) }
+        case .bench:
             cmdBench(smc)
 
-        case "keys":
-            guard arguments.count <= 2 else { usage(); exit(2) }
-            success = cmdKeys(smc, prefix: arguments.count == 2 ? arguments[1] : "F")
+        case .keys(let prefix):
+            success = cmdKeys(smc, prefix: prefix)
 
-        case "set":
-            guard arguments.count >= 2,
-                  let value = Double(arguments[1]), value.isFinite else {
-                stderr("usage: fanknob set <0-100> [--fan <n>] [--for <seconds>]")
-                exit(2)
-            }
-            let percent = value.clamped(0, 100)
-            var hold = 0
-            var fan: Int?
-            var index = 2
-            while index < arguments.count {
-                guard index + 1 < arguments.count else { usage(); exit(2) }
-                switch arguments[index] {
-                case "--for":
-                    guard let seconds = Int(arguments[index + 1]),
-                          (0...maximumHoldSeconds).contains(seconds) else {
-                        stderr("--for must be between 0 and \(maximumHoldSeconds)")
-                        exit(2)
-                    }
-                    hold = seconds
-                case "--fan":
-                    guard let parsed = Int(arguments[index + 1]), parsed >= 0 else {
-                        stderr("--fan must be a non-negative integer")
-                        exit(2)
-                    }
-                    fan = parsed
-                default:
-                    stderr("unknown option: \(arguments[index])")
-                    exit(2)
-                }
-                index += 2
-            }
+        case .set(let percent, let fan, let hold):
             var wire = fan.map { "setfan \($0) \(Int(percent))" }
                 ?? "set \(Int(percent))"
             if hold > 0 { wire += " \(hold)" }
@@ -516,8 +528,7 @@ struct Fanknob {
                 return true
             }
 
-        case "auto":
-            guard arguments.count == 1 else { usage(); exit(2) }
+        case .auto:
             success = control("auto", smc) { hardware in
                 var ok = true
                 for index in 0..<fanCount(hardware) {
@@ -532,36 +543,14 @@ struct Fanknob {
                 return ok
             }
 
-        case "preset":
-            guard arguments.count == 2,
-                  let preset = CurvePreset(rawValue: arguments[1].lowercased()) else {
-                stderr("usage: fanknob preset quiet|balanced|turbo")
-                exit(2)
-            }
+        case .preset(let preset):
             success = control("preset \(preset.rawValue)", smc, fallback: nil)
 
-        case "curve":
-            guard arguments.count == 2, let curve = FanCurve.parse(arguments[1]) else {
-                stderr("curve requires 2–12 points with increasing temperatures and speeds")
-                exit(2)
-            }
+        case .curve(let curve):
             success = control("curve \(curve.wireFormat)", smc, fallback: nil)
 
-        case "watchdog":
-            guard arguments.count == 2 else { usage(); exit(2) }
-            let value = arguments[1].lowercased()
-            if value != "off" {
-                guard let temperature = Double(value), temperature.isFinite,
-                      temperature > 0, temperature <= 120 else {
-                    stderr("watchdog must be a temperature from 1–120, or off")
-                    exit(2)
-                }
-            }
+        case .watchdog(let value):
             success = control("watchdog \(value)", smc, fallback: nil)
-
-        default:
-            usage()
-            exit(2)
         }
         if !success { exit(1) }
     }

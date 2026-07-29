@@ -15,9 +15,11 @@ APP="$VOLUME/Applications/Fanknob.app"
 mkdir -p "$STUBS" "$APP"
 : >"$LOG"
 
+# No colon in the expansion: ${VAR-alice} keeps a set-but-EMPTY value, so the
+# no-console case (empty user) is actually reachable through the stub.
 cat >"$STUBS/stat" <<'EOF'
 #!/bin/sh
-echo "${FANKNOB_TEST_CONSOLE_USER:-alice}"
+echo "${FANKNOB_TEST_CONSOLE_USER-alice}"
 EOF
 
 cat >"$STUBS/id" <<'EOF'
@@ -71,6 +73,15 @@ grep -Fqx "launchctl asuser 502 sudo -u alice open $APP" "$LOG" || {
 run_postinstall root
 if grep -q "asuser" "$LOG"; then
     echo "postinstall test failed: app launch attempted without a console user" >&2
+    exit 1
+fi
+
+# No console session at all (stat reports an empty user): launch_app must bail
+# before running `launchctl asuser "" pkill -U ""` as root.
+: >"$LOG"
+run_postinstall ""
+if grep -q "asuser" "$LOG"; then
+    echo "postinstall test failed: app launch attempted with no console session" >&2
     exit 1
 fi
 

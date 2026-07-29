@@ -58,6 +58,8 @@ public struct DaemonConfig: Codable, Equatable, Sendable {
     /// into an indefinite override.
     public var revertAt: Date?
 
+    /// Compared against the raw hottest sensor (see DaemonEngine.tick), with
+    /// `watchdogStrikeLimit` consecutive samples required before it fires.
     public static let defaultWatchdogCelsius: Double = 95
     public static let directory = "/Library/Application Support/fanknob"
     public static let path = directory + "/config.json"
@@ -70,12 +72,60 @@ public struct DaemonConfig: Codable, Equatable, Sendable {
         self.revertAt = revertAt
     }
 
-    public static func load(from path: String = DaemonConfig.path) -> DaemonConfig? {
+    public static func load(from path: String = DaemonConfig.path,
+                            logger: (String) -> Void = { _ in }) -> DaemonConfig? {
         guard let data = FileManager.default.contents(atPath: path) else { return nil }
-        guard let config = try? JSONDecoder().decode(DaemonConfig.self, from: data),
-              config.watchdogCelsius.map({ $0.isFinite && $0 > 0 && $0 <= 120 }) ?? true
-        else { return nil }
+        if let config = try? JSONDecoder().decode(DaemonConfig.self, from: data),
+           config.watchdogCelsius.map({ isValidWatchdogCelsius($0) }) ?? true {
+            return config
+        }
+        // Field-wise salvage. All-or-nothing decoding meant one field that
+        // fails today's validation — e.g. a curve saved under an older build's
+        // looser rules — silently reset EVERYTHING, including the watchdog (a
+        // safety setting), with a log line indistinguishable from a fresh
+        // install. Keep each field that still validates, and say what moved.
+        guard let salvaged = try? JSONDecoder().decode(SalvagedConfig.self, from: data) else {
+            logger("config at \(path) is unreadable; starting with defaults")
+            return nil
+        }
+        var config = DaemonConfig()
+        if let mode = salvaged.mode {
+            config.mode = mode
+            config.revertAt = salvaged.revertAt
+        } else {
+            logger("persisted mode is no longer valid; discarding it and staying in auto")
+        }
+        if salvaged.watchdogKeyPresent {
+            if let celsius = salvaged.watchdogCelsius, isValidWatchdogCelsius(celsius) {
+                config.watchdogCelsius = celsius
+            } else {
+                logger("persisted watchdog is no longer valid; "
+                       + "resetting to \(Int(defaultWatchdogCelsius))°C")
+            }
+        } else {
+            config.watchdogCelsius = nil   // the key's absence means explicitly off
+        }
         return config
+    }
+
+    /// Lenient mirror of the strict Codable shape: every field decodes
+    /// independently, so one invalid value can't take the others down.
+    private struct SalvagedConfig: Decodable {
+        let mode: ControlMode?
+        let watchdogCelsius: Double?
+        let watchdogKeyPresent: Bool
+        let revertAt: Date?
+
+        private enum CodingKeys: CodingKey { case mode, watchdogCelsius, revertAt }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            mode = (try? container.decodeIfPresent(ControlMode.self, forKey: .mode)) ?? nil
+            watchdogKeyPresent = container.contains(.watchdogCelsius)
+            watchdogCelsius = (try? container.decodeIfPresent(Double.self,
+                                                              forKey: .watchdogCelsius)) ?? nil
+            revertAt = (try? container.decodeIfPresent(Date.self, forKey: .revertAt)) ?? nil
+        }
     }
 
     @discardableResult

@@ -77,6 +77,11 @@ public final class SMCFanHardware: FanHardware {
 /// closures without pretending the mutable engine is internally concurrent.
 public final class DaemonEngine: @unchecked Sendable {
     public static let sensorFailureLimit = 3
+    /// Consecutive over-limit samples before the watchdog fires. The trigger is
+    /// the raw hottest sensor anywhere in the machine, and a single board or
+    /// core probe can burst past the limit for one 2 s sample under load — one
+    /// spike must not cancel and persist away the user's mode.
+    public static let watchdogStrikeLimit = 2
 
     private let hardware: FanHardware
     private let configPath: String
@@ -88,6 +93,7 @@ public final class DaemonEngine: @unchecked Sendable {
     private var smoothed: Double?
     private var hottest: Double?
     private var consecutiveSensorFailures = 0
+    private var watchdogStrikes = 0
     private var watchdogTripped = false
     private var safetyReason: String?
     private var automaticRetryPending = false
@@ -100,7 +106,8 @@ public final class DaemonEngine: @unchecked Sendable {
         self.configPath = configPath
         self.now = now
         self.logger = logger
-        self.config = DaemonConfig.load(from: configPath) ?? DaemonConfig()
+        self.config = DaemonConfig.load(from: configPath, logger: logger)
+            ?? DaemonConfig()
     }
 
     // MARK: Lifecycle
@@ -155,6 +162,12 @@ public final class DaemonEngine: @unchecked Sendable {
             return
         }
 
+        // Sample in EVERY mode, including auto. The curve EMA and `hottest`
+        // must stay fresh while the daemon idles in auto, or the first curve
+        // application after re-entry blends against minutes-old heat and
+        // `state` reports a stale hottestCelsius indefinitely.
+        let sample = sampleTemperatures()
+
         guard config.mode.name != "auto" else {
             if automaticRetryPending {
                 automaticRetryPending = !applyAutomatic()
@@ -163,10 +176,11 @@ public final class DaemonEngine: @unchecked Sendable {
                 }
             }
             consecutiveSensorFailures = 0
+            watchdogStrikes = 0
             return
         }
 
-        guard let sample = sampleTemperatures() else {
+        guard let sample else {
             consecutiveSensorFailures += 1
             if consecutiveSensorFailures >= Self.sensorFailureLimit {
                 transitionToAutomatic(
@@ -180,14 +194,21 @@ public final class DaemonEngine: @unchecked Sendable {
 
         // Curves use the stable average; the safety boundary uses the raw
         // hottest sensor so smoothing or a cool neighboring probe cannot hide
-        // a genuine hotspot.
+        // a genuine hotspot. Debounced (watchdogStrikeLimit) so a single-sample
+        // probe spike doesn't cancel the user's mode; while a strike is
+        // pending, the curve below keeps responding to the heat.
         if let limit = config.watchdogCelsius, sample.raw.hottest >= limit {
-            transitionToAutomatic(
-                reason: String(format: "watchdog: hottest %.0f°C >= %.0f°C",
-                               sample.raw.hottest, limit),
-                watchdog: true
-            )
-            return
+            watchdogStrikes += 1
+            if watchdogStrikes >= Self.watchdogStrikeLimit {
+                transitionToAutomatic(
+                    reason: String(format: "watchdog: hottest %.0f°C >= %.0f°C",
+                                   sample.raw.hottest, limit),
+                    watchdog: true
+                )
+                return
+            }
+        } else {
+            watchdogStrikes = 0
         }
 
         if case .curve(let curve, _) = config.mode,
@@ -208,6 +229,7 @@ public final class DaemonEngine: @unchecked Sendable {
 
         case .success(.auto):
             watchdogTripped = false
+            watchdogStrikes = 0
             safetyReason = nil
             config.mode = .auto
             config.revertAt = nil
@@ -234,13 +256,16 @@ public final class DaemonEngine: @unchecked Sendable {
 
         case .success(.curve(let curve, let preset)):
             watchdogTripped = false
+            watchdogStrikes = 0
             safetyReason = nil
             config.mode = .curve(curve, preset: preset)
             config.revertAt = nil
             guard let sample = sampleTemperatures() else {
-                config.mode = .auto
-                _ = applyAutomatic()
-                _ = saveConfig()
+                // Through transitionToAutomatic, not an inline revert: if the
+                // hand-back write fails too, only the transition path arms the
+                // retry flag and surfaces a safetyReason.
+                transitionToAutomatic(reason: "temperature sensors unavailable; curve not applied",
+                                      watchdog: false)
                 return .init(ok: false, message: "temperature sensors unavailable; staying in automatic control")
             }
             guard applyCurve(curve, temperature: sample.smoothed, force: true) else {
@@ -312,7 +337,14 @@ public final class DaemonEngine: @unchecked Sendable {
 
     private func setManual(percent: Double, fans: [Int],
                            holdSeconds: Int) -> DaemonReply {
+        // With no controllable fans (FNum unreadable) there is nothing to
+        // write; persisting .manual([]) would report "manual" forever while
+        // controlling nothing.
+        guard !fans.isEmpty else {
+            return .init(ok: false, message: "no fans detected; nothing to set")
+        }
         watchdogTripped = false
+        watchdogStrikes = 0
         safetyReason = nil
 
         var setpoints: [Int: Double] = [:]
@@ -334,10 +366,13 @@ public final class DaemonEngine: @unchecked Sendable {
                 lines.append(String(format: "fan %d -> %.0f rpm (knob %d%%)",
                                     index, rpm, Int(percent)))
             } catch {
-                _ = applyAutomatic()
-                config.mode = .auto
-                config.revertAt = nil
-                _ = saveConfig()
+                // transitionToAutomatic rather than an inline revert: a
+                // transient IOKit error can fail the hand-back write too, and
+                // only the transition path arms automaticRetryPending — an
+                // inline revert would leave already-written fans pinned while
+                // reporting "auto" with no retry and no safetyReason.
+                transitionToAutomatic(reason: "fan \(index) write failed",
+                                      watchdog: false)
                 return .init(ok: false, message:
                     "fan \(index) write failed; returned all fans to automatic control")
             }
@@ -419,6 +454,7 @@ public final class DaemonEngine: @unchecked Sendable {
         config.mode = .auto
         config.revertAt = nil
         watchdogTripped = watchdog
+        watchdogStrikes = 0
         safetyReason = reason
         automaticRetryPending = !applyAutomatic()
         if automaticRetryPending {

@@ -102,10 +102,9 @@ struct PopoverView: View {
                     TempsSection(model: model)
                     Divider()
                     FansSection(model: model)
-                    if model.history.count >= 2 {
-                        Divider()
-                        HistorySection(model: model)
-                    }
+                    // HistorySection gates itself on history.count, keeping
+                    // the 5 s history append from invalidating this whole body.
+                    HistorySection(model: model)
                     Divider()
                     ControlSection(model: model)
                     Divider()
@@ -563,8 +562,11 @@ private struct PerFanSlider: View {
 private struct PresetRow: View {
     @Bindable var model: FanModel
 
-    private var presetBinding: Binding<CurvePreset> {
-        Binding(get: { model.preset }, set: { model.selectPreset($0) })
+    /// Optional selection: nil (nothing highlighted) while a custom curve is
+    /// active, so the picker never claims a preset is driving the fans.
+    private var presetBinding: Binding<CurvePreset?> {
+        Binding(get: { model.customCurve == nil ? model.preset : nil },
+                set: { if let p = $0 { model.selectPreset(p) } })
     }
 
     var body: some View {
@@ -573,7 +575,7 @@ private struct PresetRow: View {
                 .frame(width: 38, alignment: .leading)
             Picker("", selection: presetBinding) {
                 ForEach(CurvePreset.allCases, id: \.self) { p in
-                    Text(p.label).tag(p)
+                    Text(p.label).tag(CurvePreset?.some(p))
                 }
             }
             .pickerStyle(.segmented)
@@ -644,6 +646,16 @@ private struct HistorySection: View {
     var model: FanModel
 
     var body: some View {
+        // The count read lives HERE, not in PopoverView.body: @Observable
+        // tracks per View.body, and history changes every 5 s. The `if`'s
+        // children flatten into the parent VStack, so layout is unchanged.
+        if model.history.count >= 2 {
+            Divider()
+            content
+        }
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack {
                 Text("Last 30 minutes").font(.caption).foregroundStyle(.secondary)
@@ -727,7 +739,10 @@ private struct CurveEditorView: View {
     init(model: FanModel, onClose: @escaping () -> Void) {
         self.model = model
         self.onClose = onClose
+        // customCurve second: when the daemon state is briefly nil, an active
+        // custom curve must not fall through to a preset's points.
         let initial = model.lastDaemonState?.curve.flatMap(FanCurve.parse)
+            ?? model.customCurve
             ?? model.preset.curve
         _points = State(initialValue: initial.points)
     }
@@ -770,7 +785,8 @@ private struct CurveEditorView: View {
                 Button {
                     addPoint()
                 } label: { Image(systemName: "plus") }
-                    .disabled(points.count >= FanCurve.maximumPointCount)
+                    .disabled(points.count >= FanCurve.maximumPointCount
+                              || widestGap < 2)
                     .help("Add curve point")
                     .accessibilityLabel("Add curve point")
                 Button {
@@ -879,17 +895,25 @@ private struct CurveEditorView: View {
         }
     }
 
+    /// A new point needs 1 °C of clearance to each neighbor (the spacing rule
+    /// FanCurve enforces), so only a gap of at least 2 °C can host one.
+    private var widestGap: Double {
+        zip(points, points.dropFirst()).map { $1.celsius - $0.celsius }.max() ?? 0
+    }
+
     private func addPoint() {
         guard points.count < FanCurve.maximumPointCount,
               let curve else { return }
         let gaps = zip(points.indices, points.indices.dropFirst())
+            .filter { points[$0.1].celsius - points[$0.0].celsius >= 2 }
         guard let pair = gaps.max(by: {
             points[$0.1].celsius - points[$0.0].celsius
                 < points[$1.1].celsius - points[$1.0].celsius
         }) else { return }
-        let temperature = (points[pair.0].celsius + points[pair.1].celsius) / 2
+        let temperature = ((points[pair.0].celsius + points[pair.1].celsius) / 2)
+            .rounded()
         let point = FanCurve.Point(celsius: temperature,
-                                   knob: curve.knob(at: temperature))
+                                   knob: curve.knob(at: temperature).rounded())
         points.insert(point, at: pair.1)
         selectedPoint = pair.1
     }
@@ -899,13 +923,15 @@ private struct CurveEditorView: View {
             ? FanCurve.temperatureRange.lowerBound : points[index - 1].celsius + 1
         let upper = index == points.count - 1
             ? FanCurve.temperatureRange.upperBound : points[index + 1].celsius - 1
-        return lower...upper
+        // Neighbors sitting exactly 1 °C apart make lower == upper; anything
+        // tighter must not invert the range — Stepper traps on lower > upper.
+        return lower...max(lower, upper)
     }
 
     private func speedBounds(for index: Int) -> ClosedRange<Double> {
         let lower = index == 0 ? 0 : points[index - 1].knob
         let upper = index == points.count - 1 ? 100 : points[index + 1].knob
-        return lower...upper
+        return lower...max(lower, upper)
     }
 
     private func temperatureBinding(for index: Int) -> Binding<Double> {
