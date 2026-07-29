@@ -82,25 +82,42 @@ struct ModeBadge: View {
 
 // MARK: - Popover (container only; sections are isolated child views)
 
+/// The outgoing pane's half of a navigation push: it slides a fraction of the
+/// distance and dims while the incoming pane covers it at full speed — the
+/// parallax that makes the swap read as layered pages rather than one flat
+/// view scooting sideways. Symmetric, so the same modifier plays the reverse
+/// role when navigating back.
+private struct ParallaxUnder: ViewModifier {
+    let active: Bool
+    func body(content: Content) -> some View {
+        content
+            .offset(x: active ? -110 : 0)
+            .opacity(active ? 0.3 : 1)
+    }
+}
+
 struct PopoverView: View {
     var model: FanModel
     @State private var showingHelp = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// Secondary panes (editor, help) push in from the right; the main view
-    /// returns from the left — a navigation feel instead of a hard cut.
-    private static let pushIn: AnyTransition =
-        .move(edge: .trailing).combined(with: .opacity)
-    private static let pushOut: AnyTransition =
-        .move(edge: .leading).combined(with: .opacity)
+    /// Secondary panes (editor, help) slide in full-bleed from the right;
+    /// the main view recedes underneath with parallax.
+    private static let pushIn: AnyTransition = .move(edge: .trailing)
+    private static let recede: AnyTransition = .modifier(
+        active: ParallaxUnder(active: true),
+        identity: ParallaxUnder(active: false)
+    )
 
     var body: some View {
         Group {
             if model.showCurveEditor {
                 CurveEditorView(model: model) { model.showCurveEditor = false }
+                    .padding(16)
                     .transition(Self.pushIn)
             } else if showingHelp {
                 HelpView { showingHelp = false }
+                    .padding(16)
                     .transition(Self.pushIn)
             } else {
                 VStack(alignment: .leading, spacing: 14) {
@@ -135,16 +152,20 @@ struct PopoverView: View {
                     }
                     StatusSection(model: model)
                 }
-                .transition(Self.pushOut)
+                // Padding INSIDE each pane, not around the Group: an inset
+                // pane sliding within a static margin frame is exactly what
+                // read as "the view moving inside its container".
+                .padding(16)
+                .transition(Self.recede)
             }
         }
-        .padding(16)
         .frame(width: model.showCurveEditor ? 420 : 320)
-        // One animation drives the pane slide AND the 320↔420 width change,
+        .clipped()
+        // One spring drives the pane slide AND the 320↔420 width change,
         // so the window grows while the editor slides in instead of snapping.
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22),
+        .animation(reduceMotion ? nil : .smooth(duration: 0.3),
                    value: model.showCurveEditor)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22),
+        .animation(reduceMotion ? nil : .smooth(duration: 0.3),
                    value: showingHelp)
         .onAppear { model.popoverOpened() }   // fresh data the moment it opens
     }
