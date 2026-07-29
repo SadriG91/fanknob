@@ -112,6 +112,11 @@ private struct SlideOverCard: ViewModifier {
     }
 }
 
+/// Debug: FANKNOB_SLOW_ANIM=1 stretches the pane transition ~8× so it can be
+/// observed (and screenshot-sampled) frame by frame. Never set in release use.
+private let paneAnimationScale: Double =
+    ProcessInfo.processInfo.environment["FANKNOB_SLOW_ANIM"] == "1" ? 8 : 1
+
 struct PopoverView: View {
     var model: FanModel
     @State private var showingHelp = false
@@ -173,21 +178,24 @@ struct PopoverView: View {
                 .transition(Self.recede)
             }
         }
-        // Trailing alignment, because the popover window's RIGHT edge is the
-        // stable one (width changes grow it leftward): pinned there, the main
-        // view holds still on screen while the 420→320 shrink plays out on
-        // the way back, instead of drifting with the centering math — that
-        // drift on top of the parallax is what made the pop feel mushy.
-        .frame(width: model.showCurveEditor ? 420 : 320, alignment: .trailing)
+        // ONE width for every pane, non-negotiable: MenuBarExtra owns the
+        // popover window's frame and applies size changes in a single
+        // unanimated step — measured: a 320→420 pane swap teleported the
+        // window 359 pt left on the first frame while the content was still
+        // sliding. With a constant width the window never moves and the
+        // navigation is pure in-window animation.
+        .frame(width: 380)
         .clipped()
-        // One spring drives the pane slide AND the width change. The pop is
-        // tuned quicker than the push (the animation is picked from the NEW
-        // value when the change lands), matching navigation-stack feel.
+        // The pop is tuned quicker than the push (the animation is picked
+        // from the NEW value when the change lands), matching
+        // navigation-stack feel.
         .animation(reduceMotion ? nil
-                   : .smooth(duration: model.showCurveEditor ? 0.32 : 0.24),
+                   : .smooth(duration: (model.showCurveEditor ? 0.32 : 0.24)
+                             * paneAnimationScale),
                    value: model.showCurveEditor)
         .animation(reduceMotion ? nil
-                   : .smooth(duration: showingHelp ? 0.32 : 0.24),
+                   : .smooth(duration: (showingHelp ? 0.32 : 0.24)
+                             * paneAnimationScale),
                    value: showingHelp)
         .onAppear {
             model.popoverOpened()   // fresh data the moment it opens
