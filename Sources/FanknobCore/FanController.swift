@@ -59,6 +59,17 @@ public final class FanController {
     /// Can we perform writes? True if root, or the daemon is reachable.
     public var canWrite: Bool { geteuid() == 0 || daemonReachable() }
 
+    /// Whether writes would go straight to the SMC because we are root, with no
+    /// daemon in the picture.
+    ///
+    /// Callers that already perform a real round-trip should prefer this over
+    /// `canWrite`: `daemonReachable()` only completes a connect(), which the
+    /// kernel accepts into the listen backlog whether or not the daemon can
+    /// still answer. Reporting on that basis let the app show a green
+    /// "fan control available" light at the same moment it was showing
+    /// "daemon timed out", with the controls left enabled and doing nothing.
+    public var canWriteDirectly: Bool { geteuid() == 0 }
+
     public func snapshot(_ scope: SnapshotScope = .full) -> Snapshot {
         guard opened else { return Snapshot(fans: [], temps: TempReport(all: [], cpu: nil, gpu: nil)) }
         let fans = (0..<fanCount(smc)).compactMap { readFan(smc, $0) }

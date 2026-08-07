@@ -249,8 +249,8 @@ final class FanModel: @unchecked Sendable {
             guard let self else { return }
             self.controller = FanController()   // opens SMC + discovers sensors
             let snap = self.controller.snapshot(.full)
-            let writable = self.controller.canWrite
             let state = self.controller.daemonState()
+            let writable = state != nil || self.controller.canWriteDirectly
             DispatchQueue.main.async {
                 self.ready = true
                 self.publish(snap: snap, writable: writable, state: state)
@@ -397,8 +397,11 @@ final class FanModel: @unchecked Sendable {
                 return
             }
             let snap = self.controller.snapshot(scope)
-            let writable = self.controller.canWrite
             let state = self.controller.daemonState()
+            // Derived from the state round-trip that just happened, not from a
+            // bare connect(): the light and the enabled controls now mean the
+            // daemon actually answered.
+            let writable = state != nil || self.controller.canWriteDirectly
             DispatchQueue.main.async {
                 self.pollInFlight = false
                 self.publish(snap: snap, writable: writable, state: state, scope: scope)
