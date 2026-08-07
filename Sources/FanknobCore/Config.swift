@@ -157,7 +157,9 @@ public struct DaemonState: Codable, Equatable, Sendable {
     public var daemonVersion: String?
     public var preset: String?           // preset name, when the curve came from one
     public var curve: String?            // wire-format curve, when in curve mode
-    public var knob: Double?             // effective knob right now
+    /// Target requested by the selected Manual/Curve mode. The physical output
+    /// is 100% instead while `coolingAtMaximum` is true.
+    public var knob: Double?
     public var watchdogCelsius: Double?
     public var watchdogTripped: Bool
     /// The watchdog is holding every fan at full speed right now, so the

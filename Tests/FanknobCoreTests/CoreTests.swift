@@ -723,6 +723,24 @@ private final class MockFanHardware: FanHardware {
         #expect(hardware.automaticCalls.isEmpty)
     }
 
+    @Test func missingSampleBreaksConsecutiveWatchdogRecovery() {
+        let hardware = MockFanHardware()
+        hardware.samples = [[70, 101], [70, 101], [70, 70], [],
+                            [70, 70], [70, 70]]
+        let configPath = path()
+        defer { unlink(configPath) }
+        let engine = DaemonEngine(hardware: hardware, configPath: configPath)
+
+        #expect(engine.handle("set 35").ok)
+        engine.tick(); engine.tick() // trip
+        engine.tick()                // first cool sample
+        engine.tick()                // missing: reset the recovery sequence
+        engine.tick()                // first cool sample after the gap
+        #expect(engine.currentState().watchdogTripped)
+        engine.tick()                // second consecutive cool sample: release
+        #expect(!engine.currentState().watchdogTripped)
+    }
+
     @Test func maximumWriteFailureDegradesOnlyAffectedFanAndRetries() {
         let hardware = MockFanHardware()
         hardware.samples = [[70, 101]]

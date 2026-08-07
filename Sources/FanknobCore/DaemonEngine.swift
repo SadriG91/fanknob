@@ -278,6 +278,10 @@ public final class DaemonEngine: @unchecked Sendable {
                 }
             } else {
                 consecutiveSensorFailures += 1
+                // Recovery requires consecutive readable samples with real
+                // headroom. A missing sample breaks that sequence even though
+                // it must not release the active maximum-cooling clamp.
+                watchdogCoolStrikes = 0
             }
             _ = enforceMaximumCooling()
             return
