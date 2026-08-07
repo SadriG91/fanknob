@@ -1000,6 +1000,27 @@ private final class MockFanHardware: FanHardware {
         }
     }
 
+    /// A client that gives up before we answer is normal — its own timeout —
+    /// and must be reported as a disconnect, not a system error. The daemon
+    /// only logs non-disconnects, so mapping this wrong buried a real incident
+    /// under hundreds of "Broken pipe" lines.
+    @Test func writingToAClosedPeerReportsDisconnect() throws {
+        var descriptors: [Int32] = [0, 0]
+        #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors) == 0)
+        defer { close(descriptors[0]) }
+        configureDaemonSocket(descriptors[0])
+
+        close(descriptors[1])                 // the client walks away
+        var ignored: Int32 = 1
+        _ = setsockopt(descriptors[0], SOL_SOCKET, SO_NOSIGPIPE, &ignored,
+                       socklen_t(MemoryLayout<Int32>.size))
+
+        #expect(throws: DaemonSocketError.disconnected) {
+            // Enough data that at least one send() reaches the dead peer.
+            try writeDaemonLine(descriptors[0], String(repeating: "x", count: 512))
+        }
+    }
+
     @Test func structuredReplyRoundtrips() {
         let reply = DaemonReply(ok: true, message: "state",
                                 state: DaemonState(mode: "curve", knob: 42))

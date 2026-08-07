@@ -243,6 +243,11 @@ public func writeDaemonLine(_ fd: Int32, _ line: String) throws {
         if sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) {
             throw DaemonSocketError.timeout
         }
+        // The client gave up before we answered — its own timeout, nothing
+        // wrong here. Reported as a disconnect so the daemon stays quiet about
+        // it: logging a line per occurrence buried a real incident under
+        // hundreds of "Broken pipe" entries.
+        if sent < 0 && errno == EPIPE { throw DaemonSocketError.disconnected }
         throw DaemonSocketError.system(String(cString: strerror(errno)))
     }
 }
