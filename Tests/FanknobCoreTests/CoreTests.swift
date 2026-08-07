@@ -703,6 +703,34 @@ private final class MockFanHardware: FanHardware {
         #expect(hardware.automaticCalls == [0, 1])
     }
 
+    @Test func expiredHoldAtHotRestartClampsUntilWatchdogRecovery() {
+        let configPath = path()
+        defer { unlink(configPath) }
+        var clock = Date(timeIntervalSince1970: 10_000)
+
+        let first = DaemonEngine(hardware: MockFanHardware(),
+                                 configPath: configPath, now: { clock })
+        #expect(first.handle("set 40 5").ok)
+        clock = clock.addingTimeInterval(6)
+
+        let restartedHardware = MockFanHardware()
+        restartedHardware.samples = [[70, 101], [70, 70]]
+        let restarted = DaemonEngine(hardware: restartedHardware,
+                                     configPath: configPath, now: { clock })
+        restarted.start()
+
+        #expect(restarted.currentState().mode == "manual")
+        #expect(restarted.currentState().coolingAtMaximum)
+        #expect(restartedHardware.automaticCalls.isEmpty)
+        #expect(restartedHardware.setCalls.allSatisfy { $0.1 == 100 })
+
+        restarted.tick()
+        #expect(restarted.currentState().coolingAtMaximum)
+        restarted.tick()
+        #expect(restarted.currentState().mode == "auto")
+        #expect(restartedHardware.automaticCalls == [0, 1])
+    }
+
     @Test func missingSensorsDoNotReleaseAnActiveWatchdog() {
         let hardware = MockFanHardware()
         hardware.samples = [[70, 101]]

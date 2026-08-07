@@ -139,12 +139,14 @@ public final class DaemonEngine: @unchecked Sendable {
         let wd = config.watchdogCelsius.map { "\(Int($0))°C" } ?? "off"
         logger("state: mode=\(config.mode.name) watchdog=\(wd)")
 
+        var holdExpired = false
         if let deadline = config.revertAt {
-            guard case .manual = config.mode, deadline > now() else {
+            guard case .manual = config.mode else {
                 transitionToAutomatic(reason: "expired hold found at startup",
                                       watchdog: false)
                 return
             }
+            holdExpired = deadline <= now()
         }
 
         let startupSample = config.mode.name == "auto" ? nil : sampleTemperatures()
@@ -155,6 +157,12 @@ public final class DaemonEngine: @unchecked Sendable {
             // gap at the worst possible time, so a hot startup clamps
             // immediately. A false positive is noisy, but safely noisy.
             beginWatchdogCooling(hottest: sample.raw.hottest, limit: limit)
+            return
+        }
+
+        if holdExpired {
+            transitionToAutomatic(reason: "expired hold found at startup",
+                                  watchdog: false)
             return
         }
 
