@@ -162,6 +162,7 @@ final class FanModel: @unchecked Sendable {
     var holdRemaining = 0
     var watchdogCelsius: Double? = DaemonConfig.defaultWatchdogCelsius
     var watchdogTripped = false
+    var coolingAtMaximum = false
     /// The user closed the watchdog banner; re-armed when a NEW trip arrives.
     var watchdogNoticeDismissed = false
     var safetyReason: String?
@@ -345,7 +346,15 @@ final class FanModel: @unchecked Sendable {
     /// Banner text for a watchdog trip, folding in the daemon's measurement
     /// ("watchdog: hottest 97°C >= 95°C") so the user sees why, not just that.
     var watchdogNotice: String {
-        var text = "Too hot while overriding — the fans are back under firmware control."
+        var text: String
+        if coolingAtMaximum {
+            text = "Too hot — every fan is at full speed until it cools down."
+        } else if mode == .auto {
+            // Compatibility with the pre-clamp daemon during an upgrade.
+            text = "Too hot while overriding — the fans are back under firmware control."
+        } else {
+            text = "Too hot — maximum cooling could not be applied to every fan; affected fans are under firmware control."
+        }
         if let reason = safetyReason, reason.hasPrefix("watchdog: ") {
             let detail = reason.dropFirst("watchdog: ".count)
                 .replacingOccurrences(of: ">=", with: "≥")
@@ -463,8 +472,19 @@ final class FanModel: @unchecked Sendable {
                 if state.watchdogTripped { watchdogNoticeDismissed = false }
                 watchdogTripped = state.watchdogTripped
             }
+            if coolingAtMaximum != state.coolingAtMaximum {
+                coolingAtMaximum = state.coolingAtMaximum
+            }
             if holdRemaining != state.holdRemaining { holdRemaining = state.holdRemaining }
-            if safetyReason != state.safetyReason { safetyReason = state.safetyReason }
+            if safetyReason != state.safetyReason {
+                // A partial maximum-write failure is a new safety event even
+                // though the watchdog latch was already visible and may have
+                // been dismissed.
+                if state.safetyReason?.hasPrefix("watchdog degraded: ") == true {
+                    watchdogNoticeDismissed = false
+                }
+                safetyReason = state.safetyReason
+            }
         }
 
         // In manual mode the fans' targets ARE the setpoints, so mirroring them
@@ -475,7 +495,11 @@ final class FanModel: @unchecked Sendable {
             var perFan: [Int: Double] = [:]
             for f in snap.fans { perFan[f.index] = f.knob.rounded() }
             if fanKnobs != perFan { fanKnobs = perFan }
-            if let first = snap.fans.first?.knob.rounded(), linkFans, knob != first { knob = first }
+            // Not while the watchdog is holding maximum: the hardware reads
+            // 100% then, and mirroring it would quietly replace the speed the
+            // user actually chose.
+            if let first = snap.fans.first?.knob.rounded(), linkFans, knob != first,
+               state?.watchdogTripped != true { knob = first }
         }
     }
 
@@ -777,7 +801,18 @@ final class FanModel: @unchecked Sendable {
                 // A live hold transition gets the more useful dedicated
                 // notification below; avoid delivering two alerts for it.
                 if reason != "hold expired" {
-                    notify(title: "Fanknob returned to Auto", body: reason)
+                    // The watchdog no longer surrenders to the firmware, it
+                    // drives the fans flat out — so it is the one safety reason
+                    // that does not mean "you are back in Auto".
+                    let title: String
+                    if reason.hasPrefix("watchdog: ") {
+                        title = "Fanknob is cooling at full speed"
+                    } else if reason.hasPrefix("watchdog degraded: ") {
+                        title = "Fanknob cooling is degraded"
+                    } else {
+                        title = "Fanknob returned to Auto"
+                    }
+                    notify(title: title, body: reason)
                 }
             } else if state.safetyReason == nil {
                 lastNotifiedSafetyReason = nil

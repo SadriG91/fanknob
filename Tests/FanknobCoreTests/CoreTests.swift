@@ -329,6 +329,7 @@ import Foundation
     @Test func stateWireFormatRoundtrips() {
         let s = DaemonState(mode: "curve", preset: "quiet", curve: "55:0,90:100",
                             knob: 42, watchdogCelsius: 95, watchdogTripped: true,
+                            coolingAtMaximum: true,
                             holdRemaining: 30)
         #expect(DaemonState.decode(s.encoded()) == s)
     }
@@ -472,7 +473,14 @@ private final class MockFanHardware: FanHardware {
         NSTemporaryDirectory() + "fanknob-engine-\(UUID().uuidString).json"
     }
 
-    @Test func watchdogUsesHottestRawSensorAfterConsecutiveStrikes() {
+    /// Over the limit, the watchdog drives every fan flat out and keeps them —
+    /// it does not hand back to the firmware.
+    ///
+    /// Releasing only helps if the firmware would run the fans harder than we
+    /// are, and it cannot exceed 100%. In the field a curve already at maximum
+    /// tripped at 104°C and the firmware took over at 2,390 rpm against a
+    /// 2,317 minimum, so the old behavior cut cooling at the hottest moment.
+    @Test func watchdogForcesMaximumCoolingAfterConsecutiveStrikes() {
         let hardware = MockFanHardware()
         hardware.samples = [[70, 100]]
         let configPath = path()
@@ -487,10 +495,86 @@ private final class MockFanHardware: FanHardware {
         engine.tick()
 
         let state = engine.currentState()
-        #expect(state.mode == "auto")
         #expect(state.watchdogTripped)
         #expect(state.hottestCelsius == 100)
-        #expect(hardware.automaticCalls == [0, 1])
+        // Still ours, and every fan is at full speed.
+        #expect(state.mode == "manual")
+        #expect(hardware.automaticCalls.isEmpty)
+        #expect(hardware.setCalls.suffix(2).allSatisfy { $0.1 == 100 })
+    }
+
+    /// And it stands down again once there is real headroom, not at the first
+    /// sample under the limit.
+    @Test func watchdogReleasesMaximumOnceTemperatureRecovers() {
+        let hardware = MockFanHardware()
+        hardware.samples = [[70, 100], [70, 100], [70, 70]]
+        let configPath = path()
+        defer { unlink(configPath) }
+        let engine = DaemonEngine(hardware: hardware, configPath: configPath)
+
+        #expect(engine.handle("set 40").ok)
+        engine.tick()
+        engine.tick()
+        #expect(hardware.setCalls.suffix(2).allSatisfy { $0.1 == 100 })
+
+        engine.tick()   // first cool sample: debounced, still holding
+        #expect(engine.currentState().watchdogTripped)
+        engine.tick()   // second: stand down
+
+        #expect(engine.currentState().mode == "manual")
+        #expect(hardware.automaticCalls.isEmpty)
+        // The user's own speed comes back. A curve re-applies itself on the
+        // next tick, but a fixed speed has nothing else to restore it and
+        // would otherwise stay stuck at the forced 100%.
+        #expect(hardware.setCalls.suffix(2).allSatisfy { $0.1 == 40 })
+        #expect(engine.currentState().watchdogTripped == false)
+    }
+
+    /// Forcing 100% is what cools the machine, so releasing at the first sample
+    /// under the limit made it oscillate — fans dropping and re-pinning every
+    /// few seconds, one notification per cycle. The release margin stops that.
+    @Test func watchdogDoesNotFlapJustUnderTheLimit() {
+        let hardware = MockFanHardware()
+        // Hovering in the band between the release margin and the limit.
+        hardware.samples = [[70, 101], [70, 101], [70, 97], [70, 99], [70, 97]]
+        let configPath = path()
+        defer { unlink(configPath) }
+        let engine = DaemonEngine(hardware: hardware, configPath: configPath)
+
+        #expect(engine.handle("set 40").ok)
+        for _ in 0..<6 { engine.tick() }
+
+        // Never dropped back to the user's speed while hovering.
+        #expect(!hardware.setCalls.dropFirst(2).contains { $0.1 == 40 })
+        #expect(engine.currentState().watchdogTripped)
+    }
+
+    /// A stale `watchdogAtMaximum` used to silence every later trip: the fans
+    /// were pinned to 100% with no banner, no notification and no log line.
+    @Test func watchdogStillReportsAfterAnEarlierEpisode() {
+        let hardware = MockFanHardware()
+        hardware.samples = [[70, 101]]
+        let configPath = path()
+        defer { unlink(configPath) }
+        var lines: [String] = []
+        let engine = DaemonEngine(hardware: hardware, configPath: configPath,
+                                  logger: { lines.append($0) })
+
+        #expect(engine.handle("set 40").ok)
+        engine.tick(); engine.tick()
+        #expect(engine.currentState().watchdogTripped)
+
+        // Back to auto, then override again while it is still hot.
+        #expect(engine.handle("auto").ok)
+        #expect(!engine.currentState().watchdogTripped)
+        #expect(engine.handle("set 30").ok)
+        lines.removeAll()
+        engine.tick(); engine.tick()
+
+        let state = engine.currentState()
+        #expect(state.watchdogTripped)
+        #expect(state.safetyReason != nil)
+        #expect(lines.contains { $0.contains("forcing maximum cooling") })
     }
 
     @Test func watchdogIgnoresSingleSampleSpike() {
@@ -508,6 +592,179 @@ private final class MockFanHardware: FanHardware {
         #expect(engine.currentState().mode == "manual")
         #expect(!engine.currentState().watchdogTripped)
         #expect(hardware.automaticCalls.isEmpty)
+    }
+
+    @Test func manualChangeDuringWatchdogUpdatesIntentWithoutLoweringCooling() {
+        let hardware = MockFanHardware()
+        hardware.samples = [[70, 101], [70, 101], [70, 70]]
+        let configPath = path()
+        defer { unlink(configPath) }
+        let engine = DaemonEngine(hardware: hardware, configPath: configPath)
+
+        #expect(engine.handle("set 40").ok)
+        engine.tick(); engine.tick()
+        let callsAtMaximum = hardware.setCalls.count
+
+        #expect(engine.handle("set 30").ok)
+        #expect(engine.currentState().mode == "manual")
+        #expect(engine.currentState().knob == 30)
+        #expect(engine.currentState().coolingAtMaximum)
+        #expect(hardware.setCalls.count == callsAtMaximum) // did not apply 30% while hot
+
+        engine.tick() // first cool sample: remain at maximum
+        #expect(hardware.setCalls.suffix(2).allSatisfy { $0.1 == 100 })
+        engine.tick() // second cool sample: restore the new intent
+        #expect(hardware.setCalls.suffix(2).allSatisfy { $0.1 == 30 })
+        #expect(!engine.currentState().watchdogTripped)
+    }
+
+    @Test func curveChangeDuringWatchdogStaysAtMaximumUntilRecovery() {
+        let hardware = MockFanHardware()
+        hardware.samples = [[70, 101], [70, 101], [70, 70]]
+        let configPath = path()
+        defer { unlink(configPath) }
+        let engine = DaemonEngine(hardware: hardware, configPath: configPath)
+
+        #expect(engine.handle("set 40").ok)
+        engine.tick(); engine.tick()
+        let callsAtMaximum = hardware.setCalls.count
+
+        #expect(engine.handle("preset quiet").ok)
+        #expect(engine.currentState().mode == "curve")
+        #expect(engine.currentState().preset == "quiet")
+        #expect(engine.currentState().coolingAtMaximum)
+        #expect(hardware.setCalls.count == callsAtMaximum)
+
+        engine.tick(); engine.tick()
+        #expect(!engine.currentState().watchdogTripped)
+        #expect(hardware.setCalls.suffix(2).allSatisfy { $0.1 < 100 })
+    }
+
+    @Test func watchdogRecoveryReleasesFansOutsidePartialManualMode() {
+        let hardware = MockFanHardware()
+        hardware.samples = [[70, 101], [70, 101], [70, 70]]
+        let configPath = path()
+        defer { unlink(configPath) }
+        let engine = DaemonEngine(hardware: hardware, configPath: configPath)
+
+        #expect(engine.handle("setfan 0 40").ok)
+        engine.tick(); engine.tick()
+        #expect(engine.currentState().coolingAtMaximum)
+
+        engine.tick(); engine.tick()
+        #expect(!engine.currentState().watchdogTripped)
+        #expect(hardware.setCalls.last?.0 == 0)
+        #expect(hardware.setCalls.last?.1 == 40)
+        #expect(hardware.automaticCalls == [1])
+    }
+
+    @Test func disablingWatchdogDuringTripRestoresSelectedMode() {
+        let hardware = MockFanHardware()
+        hardware.samples = [[70, 101]]
+        let configPath = path()
+        defer { unlink(configPath) }
+        let engine = DaemonEngine(hardware: hardware, configPath: configPath)
+
+        #expect(engine.handle("set 40").ok)
+        engine.tick(); engine.tick()
+        #expect(engine.currentState().coolingAtMaximum)
+
+        #expect(engine.handle("watchdog off").ok)
+        let state = engine.currentState()
+        #expect(state.watchdogCelsius == nil)
+        #expect(!state.watchdogTripped)
+        #expect(!state.coolingAtMaximum)
+        #expect(state.mode == "manual")
+        #expect(hardware.setCalls.suffix(2).allSatisfy { $0.1 == 40 })
+    }
+
+    @Test func expiredHoldWaitsForWatchdogRecoveryBeforeAutomaticControl() {
+        let hardware = MockFanHardware()
+        hardware.samples = [[70, 101]]
+        let configPath = path()
+        defer { unlink(configPath) }
+        var clock = Date(timeIntervalSince1970: 10_000)
+        let engine = DaemonEngine(hardware: hardware, configPath: configPath,
+                                  now: { clock })
+
+        #expect(engine.handle("set 40 5").ok)
+        engine.tick(); engine.tick()
+        clock = clock.addingTimeInterval(6)
+        engine.tick()
+        #expect(engine.currentState().mode == "manual")
+        #expect(engine.currentState().coolingAtMaximum)
+        #expect(hardware.automaticCalls.isEmpty)
+
+        hardware.samples = [[70, 70]]
+        engine.tick()
+        #expect(hardware.automaticCalls.isEmpty)
+        engine.tick()
+        #expect(engine.currentState().mode == "auto")
+        #expect(hardware.automaticCalls == [0, 1])
+    }
+
+    @Test func missingSensorsDoNotReleaseAnActiveWatchdog() {
+        let hardware = MockFanHardware()
+        hardware.samples = [[70, 101]]
+        let configPath = path()
+        defer { unlink(configPath) }
+        let engine = DaemonEngine(hardware: hardware, configPath: configPath)
+
+        #expect(engine.handle("set 35").ok)
+        engine.tick(); engine.tick()
+        hardware.samples = [[]]
+        for _ in 0..<4 { engine.tick() }
+
+        let state = engine.currentState()
+        #expect(state.mode == "manual")
+        #expect(state.watchdogTripped)
+        #expect(state.coolingAtMaximum)
+        #expect(state.sensorFailures == 4)
+        #expect(hardware.automaticCalls.isEmpty)
+    }
+
+    @Test func maximumWriteFailureDegradesOnlyAffectedFanAndRetries() {
+        let hardware = MockFanHardware()
+        hardware.samples = [[70, 101]]
+        let configPath = path()
+        defer { unlink(configPath) }
+        let engine = DaemonEngine(hardware: hardware, configPath: configPath)
+
+        #expect(engine.handle("set 40").ok)
+        hardware.failingFans = [1]
+        engine.tick(); engine.tick()
+
+        var state = engine.currentState()
+        #expect(state.mode == "manual")
+        #expect(state.watchdogTripped)
+        #expect(!state.coolingAtMaximum)
+        #expect(state.safetyReason?.hasPrefix("watchdog degraded: ") == true)
+        #expect(hardware.setCalls.contains { $0.0 == 0 && $0.1 == 100 })
+        #expect(hardware.automaticCalls == [1])
+
+        hardware.failingFans = []
+        engine.tick()
+        state = engine.currentState()
+        #expect(state.coolingAtMaximum)
+        #expect(hardware.setCalls.suffix(2).allSatisfy { $0.1 == 100 })
+    }
+
+    @Test func hotRestartClampsBeforeRestoringPersistedLowSetpoint() {
+        let configPath = path()
+        defer { unlink(configPath) }
+        let firstHardware = MockFanHardware()
+        let first = DaemonEngine(hardware: firstHardware, configPath: configPath)
+        #expect(first.handle("set 20").ok)
+
+        let restartedHardware = MockFanHardware()
+        restartedHardware.samples = [[70, 101]]
+        let restarted = DaemonEngine(hardware: restartedHardware, configPath: configPath)
+        restarted.start()
+
+        #expect(restarted.currentState().watchdogTripped)
+        #expect(restarted.currentState().coolingAtMaximum)
+        #expect(restartedHardware.setCalls.count == 2)
+        #expect(restartedHardware.setCalls.allSatisfy { $0.1 == 100 })
     }
 
     @Test func thermalSampleSeparatesCurveAverageFromSafetyMaximum() {
@@ -709,5 +966,6 @@ private final class MockFanHardware: FanHardware {
         #expect(state?.mode == "auto")
         #expect(state?.sensorFailures == 0)
         #expect(state?.safetyReason == nil)
+        #expect(state?.coolingAtMaximum == false)
     }
 }
