@@ -431,7 +431,7 @@ private struct HelpView: View {
                 row("timer", "Hold",
                     "In Manual, return to Auto after 30 s – 5 min. The helper runs the timer, so it still happens if you close this window.")
                 row("exclamationmark.shield", "Thermal watchdog",
-                    "If it gets too hot while you're overriding, the fans go back to the firmware. Set the limit in the gear menu.")
+                    "If it gets too hot while you're overriding, every fan goes to full speed until it cools down. New speed or curve choices wait behind that safety clamp; Auto releases it immediately. Set the limit in the gear menu.")
             }
 
             Divider()

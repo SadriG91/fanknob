@@ -207,6 +207,7 @@ func printDaemonState() {
         line = "auto"
     }
     let watchdog = state.watchdogCelsius.map { "\(Int($0))°C" } ?? "off"
+    if state.coolingAtMaximum { line += "  [watchdog forcing 100%]" }
     print("\nDaemon: \(line)   watchdog \(watchdog)")
     if let reason = state.safetyReason {
         print("        ⚠︎ \(reason)")

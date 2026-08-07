@@ -109,8 +109,8 @@ public final class FanController {
         runDaemonCommand("curve \(curve.wireFormat)")
     }
 
-    /// Temperature above which the daemon returns the fans to the firmware.
-    /// nil disables the watchdog.
+    /// Temperature above which the daemon drives every fan to full speed until
+    /// the machine cools down. nil disables the watchdog.
     @discardableResult
     public func setWatchdog(_ celsius: Double?) -> Bool {
         let arg = celsius.map { String(Int($0)) } ?? "off"

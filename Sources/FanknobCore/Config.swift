@@ -50,8 +50,8 @@ public enum ControlMode: Codable, Equatable, Sendable {
 
 public struct DaemonConfig: Codable, Equatable, Sendable {
     public var mode: ControlMode
-    /// Hand control back to the firmware when the hottest sensor reaches this.
-    /// nil disables the watchdog.
+    /// Drive every controllable fan to maximum when the hottest sensor reaches
+    /// this. nil disables the watchdog.
     public var watchdogCelsius: Double?
     /// Absolute expiry for a temporary manual hold. Persisting the deadline
     /// prevents a daemon restart or package upgrade from turning a short hold
@@ -157,9 +157,14 @@ public struct DaemonState: Codable, Equatable, Sendable {
     public var daemonVersion: String?
     public var preset: String?           // preset name, when the curve came from one
     public var curve: String?            // wire-format curve, when in curve mode
-    public var knob: Double?             // effective knob right now
+    /// Target requested by the selected Manual/Curve mode. The physical output
+    /// is 100% instead while `coolingAtMaximum` is true.
+    public var knob: Double?
     public var watchdogCelsius: Double?
     public var watchdogTripped: Bool
+    /// The watchdog is holding every fan at full speed right now, so the
+    /// hardware is at 100% regardless of what `knob` says the mode asks for.
+    public var coolingAtMaximum = false
     public var holdRemaining: Int        // seconds left on a timed hold, 0 if none
     public var hottestCelsius: Double?
     public var sensorFailures: Int
@@ -167,13 +172,14 @@ public struct DaemonState: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case mode, daemonVersion, preset, curve, knob, watchdogCelsius, watchdogTripped
-        case holdRemaining, hottestCelsius, sensorFailures, safetyReason
+        case coolingAtMaximum, holdRemaining, hottestCelsius, sensorFailures, safetyReason
     }
 
     public init(mode: String, daemonVersion: String? = nil,
                 preset: String? = nil, curve: String? = nil,
                 knob: Double? = nil, watchdogCelsius: Double? = nil,
-                watchdogTripped: Bool = false, holdRemaining: Int = 0,
+                watchdogTripped: Bool = false, coolingAtMaximum: Bool = false,
+                holdRemaining: Int = 0,
                 hottestCelsius: Double? = nil, sensorFailures: Int = 0,
                 safetyReason: String? = nil) {
         self.mode = mode
@@ -183,6 +189,7 @@ public struct DaemonState: Codable, Equatable, Sendable {
         self.knob = knob
         self.watchdogCelsius = watchdogCelsius
         self.watchdogTripped = watchdogTripped
+        self.coolingAtMaximum = coolingAtMaximum
         self.holdRemaining = holdRemaining
         self.hottestCelsius = hottestCelsius
         self.sensorFailures = sensorFailures
@@ -201,6 +208,8 @@ public struct DaemonState: Codable, Equatable, Sendable {
                                                         forKey: .watchdogCelsius)
         watchdogTripped = try container.decodeIfPresent(Bool.self,
                                                         forKey: .watchdogTripped) ?? false
+        coolingAtMaximum = try container.decodeIfPresent(Bool.self,
+                                                         forKey: .coolingAtMaximum) ?? false
         holdRemaining = try container.decodeIfPresent(Int.self,
                                                       forKey: .holdRemaining) ?? 0
         hottestCelsius = try container.decodeIfPresent(Double.self,

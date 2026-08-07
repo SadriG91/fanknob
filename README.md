@@ -137,7 +137,7 @@ between 20–110 °C, with temperatures at least 1 °C apart and non-decreasing
 speeds.
 
 **Thermal safety limit.** While you're overriding the fans, fanknob watches the
-temperature and hands them back to the firmware if it crosses a limit — 100 °C by
+temperature and drives every fan to full speed if it crosses a limit — 100 °C by
 default:
 
 ```sh
@@ -145,9 +145,14 @@ fanknob watchdog 90           # stricter
 fanknob watchdog off          # you're on your own
 ```
 
-It's deliberately sticky: once tripped it stays in automatic until you ask for
-something new, rather than flapping in and out of an override that isn't keeping
-up. The app shows a warning, and so does `fanknob status`.
+It cools rather than surrenders. Handing the fans back would only help if the
+firmware ran them harder than you are, and it cannot exceed full speed — so the
+limit forces every fan to 100% and holds there until the machine is back under
+it with 5 °C of headroom for two checks, then your curve or setpoint resumes.
+Changing curves or setpoints while it is hot updates what will resume without
+lowering the fans in the meantime. **Auto** and `watchdog off` remain explicit
+ways to release the override immediately. The app shows a warning while it
+lasts, and so does `fanknob status`.
 
 **It sticks safely.** Whatever's active — a curve, a fixed speed, your safety
 limit, or the absolute deadline of a timed hold — is saved and restored after a

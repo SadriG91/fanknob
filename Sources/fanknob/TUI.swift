@@ -222,7 +222,11 @@ func renderFrame(_ smc: SMC, tempKeys: [UInt32], knob: Double, canWrite: Bool,
         default:
             modeText = "\(Ansi.dim)auto\(Ansi.reset)"
         }
-        if d.watchdogTripped { modeText += "  \(Ansi.fg(208))⚠ watchdog\(Ansi.reset)" }
+        if d.coolingAtMaximum {
+            modeText += "  \(Ansi.fg(208))⚠ watchdog 100%\(Ansi.reset)"
+        } else if d.watchdogTripped {
+            modeText += "  \(Ansi.fg(208))⚠ watchdog degraded\(Ansi.reset)"
+        }
         if let reason = d.safetyReason {
             modeText += "  \(Ansi.fg(208))⚠ \(reason)\(Ansi.reset)"
         }
