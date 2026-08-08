@@ -8,8 +8,24 @@ import Darwin
 import Dispatch
 import FanknobCore
 
+/// Timestamped, because the log is the only record of what the daemon did and
+/// an untimed one cannot be lined up with anything — a boot, a power loss, or a
+/// complaint about the app. launchd appends to a single file across reboots, so
+/// without this there is no way to tell yesterday's lines from today's.
+private let logStamp: DateFormatter = {
+    let formatter = DateFormatter()
+    // Pinned to a POSIX locale: a fixed dateFormat otherwise renders in the
+    // machine's own calendar, so a Thai Buddhist or Japanese-era region would
+    // stamp the year as 2569 — defeating the point of being able to line these
+    // lines up with a boot or a bug report.
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+    return formatter
+}()
+
 func log(_ message: String) {
-    FileHandle.standardError.write(Data("fanknobd: \(message)\n".utf8))
+    let stamp = logStamp.string(from: Date())
+    FileHandle.standardError.write(Data("\(stamp) fanknobd: \(message)\n".utf8))
 }
 
 /// All hardware and engine state is confined to this queue.
