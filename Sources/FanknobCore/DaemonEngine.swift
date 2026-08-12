@@ -18,10 +18,10 @@ public struct ThermalSample: Equatable, Sendable {
     public init?(averageTemperatures: [Double],
                  safetyTemperatures: [Double]) {
         let averageValues = averageTemperatures.filter {
-            $0.isFinite && $0 > 1 && $0 < 130
+            isPlausibleTemperature($0)
         }
         let safetyValues = safetyTemperatures.filter {
-            $0.isFinite && $0 > 1 && $0 < 130
+            isPlausibleTemperature($0)
         }
         guard !averageValues.isEmpty, let hottest = safetyValues.max() else {
             return nil
@@ -65,6 +65,20 @@ public final class SMCFanHardware: FanHardware {
         let cpu = sensors.filter { $0.key.hasPrefix("Tp") }.map(\.celsius)
         let gpu = sensors.filter { $0.key.hasPrefix("Tg") }.map(\.celsius)
         let dies = cpu + gpu
+
+        let expectedCPU = tempKeys.filter { fourCCString($0).hasPrefix("Tp") }.count
+        let expectedGPU = tempKeys.filter { fourCCString($0).hasPrefix("Tg") }.count
+        let averageReadCount = expectedCPU == 0 ? all.count : cpu.count
+        let averageExpectedCount = expectedCPU == 0 ? tempKeys.count : expectedCPU
+        let safetyReadCount = expectedCPU + expectedGPU == 0 ? all.count : dies.count
+        let safetyExpectedCount = expectedCPU + expectedGPU == 0
+            ? tempKeys.count : expectedCPU + expectedGPU
+        guard hasReliableTemperatureCoverage(read: averageReadCount,
+                                             expected: averageExpectedCount),
+              hasReliableTemperatureCoverage(read: safetyReadCount,
+                                             expected: safetyExpectedCount) else {
+            return nil
+        }
         return ThermalSample(
             averageTemperatures: cpu.isEmpty ? all : cpu,
             safetyTemperatures: dies.isEmpty ? all : dies
