@@ -41,6 +41,8 @@ public final class FanController {
     private let smc = SMC()
     private let tempKeys: [UInt32]
     private let lightKeys: [UInt32]
+    private var cpuTemperature = TemperatureReadingLatch()
+    private var gpuTemperature = TemperatureReadingLatch()
 
     /// True if the SMC opened successfully (reads are possible).
     public let opened: Bool
@@ -74,7 +76,16 @@ public final class FanController {
         guard opened else { return Snapshot(fans: [], temps: TempReport(all: [], cpu: nil, gpu: nil)) }
         let fans = (0..<fanCount(smc)).compactMap { readFan(smc, $0) }
         let keys = scope == .full ? tempKeys : lightKeys
-        let temps = tempReport(from: readTempsCached(smc, keys))
+        let current = tempReport(from: readTempsCached(smc, keys), expectedKeys: keys)
+
+        // Only advance a cluster's latch when that cluster was part of this
+        // poll. Light CPU polls intentionally omit GPU sensors and must not age
+        // a perfectly good GPU reading out of the full-popover view.
+        let readsCPU = keys.contains { fourCCString($0).hasPrefix("Tp") }
+        let readsGPU = keys.contains { fourCCString($0).hasPrefix("Tg") }
+        let cpu = cpuTemperature.reading(current.cpu, sampled: readsCPU)
+        let gpu = gpuTemperature.reading(current.gpu, sampled: readsGPU)
+        let temps = TempReport(all: current.all, cpu: cpu, gpu: gpu)
         return Snapshot(fans: fans, temps: temps)
     }
 

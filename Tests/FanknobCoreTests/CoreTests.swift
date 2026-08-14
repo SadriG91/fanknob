@@ -139,6 +139,58 @@ import Foundation
         #expect(report.gpu == nil)
         #expect(report.overall == nil)
     }
+
+    @Test func partialClusterDoesNotProduceFalseLowAverage() {
+        let expected = ["Tp01", "Tp02", "Tp03", "Tp04"].map(fourCC)
+
+        let incomplete = tempReport(
+            from: [TempSensor(key: "Tp01", celsius: 45)],
+            expectedKeys: expected
+        )
+        #expect(incomplete.cpu == nil)
+
+        let sufficient = tempReport(
+            from: [
+                TempSensor(key: "Tp01", celsius: 60),
+                TempSensor(key: "Tp02", celsius: 62),
+                TempSensor(key: "Tp03", celsius: 64),
+            ],
+            expectedKeys: expected
+        )
+        #expect(sufficient.cpu == 62)
+    }
+
+    @Test func implausiblyColdReadingsAreRejected() {
+        #expect(!isPlausibleTemperature(6))
+        #expect(isPlausibleTemperature(45))
+        #expect(ThermalSample(temperatures: [6]) == nil)
+        #expect(ThermalSample(temperatures: [6, 45])?.average == 45)
+    }
+
+    @Test func transientFailureRetainsLastReliableReading() {
+        var latch = TemperatureReadingLatch()
+        #expect(latch.update(65) == 65)
+        #expect(latch.update(nil) == 65)
+        #expect(latch.update(nil) == 65)
+        #expect(latch.update(nil) == nil)
+        #expect(latch.update(45) == 45)
+    }
+
+    @Test func omittedClusterIsNotReportedOrAged() {
+        var latch = TemperatureReadingLatch()
+        #expect(latch.reading(60, sampled: true) == 60)  // full poll
+
+        // Light polls omit this cluster: do not expose 60 as current and do
+        // not count the omissions as failures.
+        for _ in 0..<5 {
+            #expect(latch.reading(nil, sampled: false) == nil)
+        }
+
+        // The next full poll may bridge a real transient failure, proving the
+        // omitted light polls did not age the retained value out.
+        #expect(latch.reading(nil, sampled: true) == 60)
+        #expect(latch.reading(62, sampled: true) == 62)
+    }
 }
 
 // MARK: - Fan curves

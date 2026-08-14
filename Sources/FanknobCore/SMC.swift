@@ -314,6 +314,54 @@ public func setFanAuto(_ smc: SMC, _ i: Int) throws {
 
 // MARK: - Temperature
 
+/// Values outside this range are not credible operating temperatures for the
+/// sensors we expose. AppleSMC occasionally returns a small positive value
+/// during a failed read; accepting every value above 1°C let those glitches
+/// appear as sharp drops in the menu and history graph.
+public let plausibleTemperatureRange = 10.0..<130.0
+
+public func isPlausibleTemperature(_ celsius: Double) -> Bool {
+    celsius.isFinite && plausibleTemperatureRange.contains(celsius)
+}
+
+/// A cluster average is only representative when most of the sensors that
+/// were discovered at startup answered this poll. Averaging a small surviving
+/// subset can otherwise turn a transient IOKit failure into a 20–50°C jump.
+func hasReliableTemperatureCoverage(read: Int, expected: Int) -> Bool {
+    guard expected > 0 else { return read > 0 }
+    let required = Int(ceil(Double(expected) * 0.75))
+    return read >= required
+}
+
+/// Keeps the most recent credible cluster value through a short read failure,
+/// but eventually clears it rather than displaying a stale temperature
+/// indefinitely if the sensors really disappear.
+struct TemperatureReadingLatch {
+    static let failureHoldLimit = 2
+
+    private(set) var value: Double?
+    private var failures = 0
+
+    /// Returns a value only when this cluster was part of the current poll.
+    /// An omitted cluster does not age out its latch, but its old value must
+    /// not masquerade as a current reading (notably GPU during light CPU polls).
+    mutating func reading(_ reading: Double?, sampled: Bool) -> Double? {
+        guard sampled else { return nil }
+        return update(reading)
+    }
+
+    mutating func update(_ reading: Double?) -> Double? {
+        if let reading {
+            value = reading
+            failures = 0
+        } else if value != nil {
+            failures += 1
+            if failures > Self.failureHoldLimit { value = nil }
+        }
+        return value
+    }
+}
+
 public struct TempSensor: Sendable {
     public let key: String
     public let celsius: Double
@@ -337,7 +385,7 @@ public func readTemps(_ smc: SMC) -> [TempSensor] {
         guard let (t, b) = smc.read(key),
               fourCCString(t).trimmingCharacters(in: .whitespaces) == "flt",
               let v = decodeToDouble(type: t, bytes: b),
-              v > 1, v < 130 else { continue }
+              isPlausibleTemperature(v) else { continue }
         out.append(TempSensor(key: name, celsius: v))
     }
     return out.sorted { $0.celsius > $1.celsius }
@@ -371,7 +419,8 @@ public func discoverTempKeys(_ smc: SMC) -> [UInt32] {
         guard fourCCString(k).hasPrefix("T") else { continue }
         guard let (t, b) = smc.read(k),
               fourCCString(t).trimmingCharacters(in: .whitespaces) == "flt",
-              let v = decodeToDouble(type: t, bytes: b), v > 1, v < 130 else { continue }
+              let v = decodeToDouble(type: t, bytes: b),
+              isPlausibleTemperature(v) else { continue }
         keys.append(k)
     }
     return keys
@@ -381,16 +430,25 @@ public func readTempsCached(_ smc: SMC, _ keys: [UInt32]) -> [TempSensor] {
     var out: [TempSensor] = []
     for k in keys {
         guard let (t, b) = smc.read(k),
-              let v = decodeToDouble(type: t, bytes: b), v > 1, v < 130 else { continue }
+              let v = decodeToDouble(type: t, bytes: b),
+              isPlausibleTemperature(v) else { continue }
         out.append(TempSensor(key: fourCCString(k), celsius: v))
     }
     return out.sorted { $0.celsius > $1.celsius }
 }
 
-public func tempReport(from sensors: [TempSensor]) -> TempReport {
+public func tempReport(from sensors: [TempSensor],
+                       expectedKeys: [UInt32] = []) -> TempReport {
     func avg(_ prefix: String) -> Double? {
         let xs = sensors.filter { $0.key.hasPrefix(prefix) }
-        return xs.isEmpty ? nil : xs.reduce(0) { $0 + $1.celsius } / Double(xs.count)
+        let expected = expectedKeys.lazy
+            .map(fourCCString)
+            .filter { $0.hasPrefix(prefix) }
+            .count
+        guard hasReliableTemperatureCoverage(read: xs.count, expected: expected) else {
+            return nil
+        }
+        return xs.reduce(0) { $0 + $1.celsius } / Double(xs.count)
     }
     return TempReport(all: sensors, cpu: avg("Tp"), gpu: avg("Tg"))
 }
